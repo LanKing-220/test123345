@@ -1,0 +1,587 @@
+Loading logs for 44776740...
+✔️ Job scheduled at 05 Mar 2026 08:44:38
+✔️ Job started at 05 Mar 2026 08:44:45
+
+INFO: View live visualizations during training with TensorBoard
+Copying features from processing blocks...
+Copying features from DSP block...
+Copying features from DSP block OK
+Copying features from processing blocks OK
+
+✔️ Job scheduled at 05 Mar 2026 08:44:55
+✔️ Job started at 05 Mar 2026 08:44:56
+Splitting data into training and validation sets...
+Splitting data into training and validation sets OK
+
+Training model...
+Training on 143 inputs, validating on 36 inputs
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   00   1.40775  1.06232 1.00      0.01   0.02
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   01   0.73504  0.64465 0.88      0.43   0.57
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   02   0.52343  0.47774 0.83      0.52   0.64
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   03   0.39503  0.34282 0.88      0.46   0.61
+Attached to job 44776740...
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   04   0.33705  0.28509 1.00      0.26   0.42
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   03   0.39503  0.34282 0.88      0.46   0.61
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   05   0.29967  0.25330 1.00      0.14   0.24
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   06   0.26076  0.22781 1.00      0.20   0.33
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   06   0.26076  0.22781 1.00      0.20   0.33
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   06   0.26076  0.22781 1.00      0.20   0.33
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   07   0.22371  0.20516 1.00      0.41   0.58
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   07   0.22371  0.20516 1.00      0.41   0.58
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   08   0.20739  0.19037 1.00      0.44   0.61
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   08   0.20739  0.19037 1.00      0.44   0.61
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   09   0.19133  0.17949 0.97      0.49   0.65
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   09   0.19133  0.17949 0.97      0.49   0.65
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   10   0.18162  0.16952 0.96      0.60   0.74
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   10   0.18162  0.16952 0.96      0.60   0.74
+        Loss     Loss    Precision Recall F1
+   10   0.18162  0.16952 0.96      0.60   0.74
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   10   0.18162  0.16952 0.96      0.60   0.74
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   11   0.16834  0.16040 0.96      0.59   0.73
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   11   0.16834  0.16040 0.96      0.59   0.73
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   11   0.16834  0.16040 0.96      0.59   0.73
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   12   0.14876  0.15344 0.96      0.55   0.70
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   12   0.14876  0.15344 0.96      0.55   0.70
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   12   0.14876  0.15344 0.96      0.55   0.70
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   12   0.14876  0.15344 0.96      0.55   0.70
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   13   0.15348  0.14926 0.96      0.55   0.70
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   13   0.15348  0.14926 0.96      0.55   0.70
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   14   0.14586  0.14713 0.96      0.54   0.69
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   14   0.14586  0.14713 0.96      0.54   0.69
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   15   0.13859  0.15112 0.98      0.55   0.70
+   14   0.14586  0.14713 0.96      0.54   0.69
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   15   0.13859  0.15112 0.98      0.55   0.70
+   14   0.14586  0.14713 0.96      0.54   0.69
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   15   0.13859  0.15112 0.98      0.55   0.70
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   16   0.13605  0.15281 0.98      0.57   0.72
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   16   0.13605  0.15281 0.98      0.57   0.72
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   16   0.13605  0.15281 0.98      0.57   0.72
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   16   0.13605  0.15281 0.98      0.57   0.72
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   17   0.13218  0.14646 0.92      0.59   0.72
+        Loss     Loss    Precision Recall F1
+   17   0.13218  0.14646 0.92      0.59   0.72
+
+Epoch   Train    Validation
+   17   0.13218  0.14646 0.92      0.59   0.72
+        Loss     Loss    Precision Recall F1
+   17   0.13218  0.14646 0.92      0.59   0.72
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   18   0.11896  0.14460 0.94      0.60   0.73
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   18   0.11896  0.14460 0.94      0.60   0.73
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   19   0.12307  0.14707 0.94      0.60   0.73
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   20   0.11514  0.15591 0.98      0.57   0.72
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   20   0.11514  0.15591 0.98      0.57   0.72
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   21   0.11589  0.15778 0.98      0.59   0.73
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   21   0.11589  0.15778 0.98      0.59   0.73
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   22   0.10275  0.15016 0.98      0.59   0.73
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   23   0.10624  0.14603 0.98      0.60   0.74
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   23   0.10624  0.14603 0.98      0.60   0.74
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   24   0.10238  0.14158 0.98      0.65   0.78
+        Loss     Loss    Precision Recall F1
+   24   0.10238  0.14158 0.98      0.65   0.78
+   23   0.10624  0.14603 0.98      0.60   0.74
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   24   0.10238  0.14158 0.98      0.65   0.78
+   23   0.10624  0.14603 0.98      0.60   0.74
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   24   0.10238  0.14158 0.98      0.65   0.78
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   25   0.11125  0.14105 0.98      0.68   0.80
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   25   0.11125  0.14105 0.98      0.68   0.80
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   25   0.11125  0.14105 0.98      0.68   0.80
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   26   0.10254  0.14010 0.98      0.66   0.79
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   26   0.10254  0.14010 0.98      0.66   0.79
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   26   0.10254  0.14010 0.98      0.66   0.79
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   26   0.10254  0.14010 0.98      0.66   0.79
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   27   0.10697  0.13630 0.98      0.66   0.79
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   27   0.10697  0.13630 0.98      0.66   0.79
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   28   0.09245  0.14061 0.98      0.66   0.79
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   28   0.09245  0.14061 0.98      0.66   0.79
+   28   0.09245  0.14061 0.98      0.66   0.79
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   29   0.09762  0.14729 0.96      0.62   0.76
+        Loss     Loss    Precision Recall F1
+   29   0.09762  0.14729 0.96      0.62   0.76
+        Loss     Loss    Precision Recall F1
+   29   0.09762  0.14729 0.96      0.62   0.76
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   30   0.10318  0.14061 0.96      0.66   0.79
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   31   0.08541  0.14243 0.96      0.65   0.78
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   32   0.08668  0.14712 0.96      0.65   0.78
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   32   0.08668  0.14712 0.96      0.65   0.78
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   33   0.08494  0.14918 0.96      0.66   0.79
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   33   0.08494  0.14918 0.96      0.66   0.79
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   33   0.08494  0.14918 0.96      0.66   0.79
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   34   0.08488  0.15645 0.98      0.66   0.79
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   35   0.08649  0.16104 0.98      0.65   0.78
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+        Loss     Loss    Precision Recall F1
+   35   0.08649  0.16104 0.98      0.65   0.78
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   36   0.07765  0.16023 0.98      0.65   0.78
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   36   0.07765  0.16023 0.98      0.65   0.78
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   36   0.07765  0.16023 0.98      0.65   0.78
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   36   0.07765  0.16023 0.98      0.65   0.78
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   37   0.08671  0.15046 0.93      0.69   0.79
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   37   0.08671  0.15046 0.93      0.69   0.79
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   38   0.07379  0.14591 0.93      0.70   0.80
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   38   0.07379  0.14591 0.93      0.70   0.80
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   38   0.07379  0.14591 0.93      0.70   0.80
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   38   0.07379  0.14591 0.93      0.70   0.80
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   39   0.08219  0.15544 0.95      0.69   0.80
+        Loss     Loss    Precision Recall F1
+   39   0.08219  0.15544 0.95      0.69   0.80
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   40   0.08801  0.13860 0.93      0.71   0.81
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   40   0.08801  0.13860 0.93      0.71   0.81
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   41   0.08113  0.14491 0.93      0.70   0.80
+        Loss     Loss    Precision Recall F1
+   41   0.08113  0.14491 0.93      0.70   0.80
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   42   0.07149  0.16318 0.96      0.69   0.80
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   43   0.06968  0.16490 0.95      0.66   0.78
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+        Loss     Loss    Precision Recall F1
+   44   0.08201  0.15821 0.97      0.72   0.83
+   44   0.08201  0.15821 0.97      0.72   0.83
+        Loss     Loss    Precision Recall F1
+   44   0.08201  0.15821 0.97      0.72   0.83
+   44   0.08201  0.15821 0.97      0.72   0.83
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   45   0.06915  0.15309 0.94      0.74   0.83
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   45   0.06915  0.15309 0.94      0.74   0.83
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   45   0.06915  0.15309 0.94      0.74   0.83
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   45   0.06915  0.15309 0.94      0.74   0.83
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   46   0.07565  0.15608 0.94      0.75   0.83
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   47   0.08765  0.15125 0.95      0.74   0.83
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+        Loss     Loss    Precision Recall F1
+   47   0.08765  0.15125 0.95      0.74   0.83
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   48   0.07402  0.14421 0.95      0.69   0.80
+        Loss     Loss    Precision Recall F1
+   48   0.07402  0.14421 0.95      0.69   0.80
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   49   0.07453  0.14335 0.95      0.70   0.81
+   48   0.07402  0.14421 0.95      0.69   0.80
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   50   0.07157  0.14853 0.95      0.70   0.81
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   51   0.07443  0.14852 0.97      0.71   0.82
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   52   0.06602  0.14608 0.97      0.71   0.82
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   52   0.06602  0.14608 0.97      0.71   0.82
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   53   0.07563  0.14738 0.97      0.72   0.83
+        Loss     Loss    Precision Recall F1
+   53   0.07563  0.14738 0.97      0.72   0.83
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   53   0.07563  0.14738 0.97      0.72   0.83
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   54   0.07564  0.14045 0.97      0.74   0.84
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   55   0.06797  0.13148 0.97      0.75   0.85
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   55   0.06797  0.13148 0.97      0.75   0.85
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   56   0.07570  0.13056 0.97      0.75   0.85
+   56   0.07570  0.13056 0.97      0.75   0.85
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   57   0.07058  0.13752 0.97      0.75   0.85
+   57   0.07058  0.13752 0.97      0.75   0.85
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   58   0.06667  0.13823 0.97      0.74   0.84
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   59   0.06844  0.13303 0.97      0.74   0.84
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+Finished training
+
+        Loss     Loss    Precision Recall F1
+   58   0.06667  0.13823 0.97      0.74   0.84
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+   59   0.06844  0.13303 0.97      0.74   0.84
+
+Epoch   Train    Validation
+        Loss     Loss    Precision Recall F1
+Finished training
+
+Converting TensorFlow Lite float32 model...
+Converting TensorFlow Lite int8 quantized model...
