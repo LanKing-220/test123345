@@ -66,6 +66,12 @@ TRACK_MAX_MISS = 6
 EDGE_LOW_TH = 55
 EDGE_HIGH_TH = 110
 
+# Strong-light handling for small balls on reflective floor.
+GLARE_L_TH = 88
+GLARE_RATIO_TH_PCT = 18
+SMALL_BALL_SIZE_TH = 24
+GLARE_DIAMETER_CAP_PCT = 115
+
 # Radius lock controls: freeze radius for a few frames when cues become unstable.
 RADIUS_LOCK_HOLD = 4
 RADIUS_JUMP_ABS = 6
@@ -215,12 +221,42 @@ def estimate_edge_strength(img, roi):
     return edge_img.get_statistics().l_mean()
 
 
-def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength):
+def estimate_glare_ratio_pct(img, roi):
+    # Estimate % of very bright pixels in ROI using LAB L channel threshold.
+    bright_blobs = img.find_blobs(
+        [(GLARE_L_TH, 100, -128, 127, -128, 127)],
+        roi=roi,
+        x_stride=1,
+        y_stride=1,
+        area_threshold=1,
+        pixels_threshold=1,
+        merge=True,
+        margin=1,
+    )
+    if not bright_blobs:
+        return 0
+
+    bright_pixels = 0
+    for b in bright_blobs:
+        bright_pixels += b.pixels()
+
+    roi_pixels = max(1, roi[2] * roi[3])
+    return (bright_pixels * 100) // roi_pixels
+
+
+def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glare_ratio_pct):
     # Local Hough circle fit guided by FOMO center and optional color center.
-    hough_threshold = 3000 if edge_strength >= 24 else 2650
+    if glare_ratio_pct >= GLARE_RATIO_TH_PCT:
+        hough_threshold = 3300 if edge_strength >= 24 else 2900
+    else:
+        hough_threshold = 3000 if edge_strength >= 24 else 2650
+
     r_guess = max(3, r_guess)
     r_min = max(3, (r_guess * 7) // 10)
     r_max = min(105, (r_guess * 13) // 10)
+    if glare_ratio_pct >= GLARE_RATIO_TH_PCT:
+        # Reflective floor often creates over-sized circles: shrink search upper bound.
+        r_max = max(r_min, (r_max * 9) // 10)
 
     circles = img.find_circles(
         roi=roi,
@@ -278,6 +314,7 @@ def estimate_tennis_diameter(img, x, y, w, h):
 
     color_d, color_cx, color_cy = estimate_color_blob(img, roi, cx, cy, bbox_d)
     edge_strength = estimate_edge_strength(img, roi)
+    glare_ratio_pct = estimate_glare_ratio_pct(img, roi)
 
     if color_d is not None:
         hough_guess = max(color_d // 2, bbox_d // 2)
@@ -290,6 +327,7 @@ def estimate_tennis_diameter(img, x, y, w, h):
         color_cy,
         hough_guess,
         edge_strength,
+        glare_ratio_pct,
     )
 
     cue_conf = 0
@@ -312,6 +350,13 @@ def estimate_tennis_diameter(img, x, y, w, h):
         cue_conf = 0
 
     d = clamp(d, 8, 210)
+
+    # Strong-light guard for far/small balls: avoid over-sized radius from reflections.
+    if (ball_size <= SMALL_BALL_SIZE_TH) and (glare_ratio_pct >= GLARE_RATIO_TH_PCT):
+        glare_cap = max(8, (bbox_d * GLARE_DIAMETER_CAP_PCT) // 100)
+        if d > glare_cap:
+            d = glare_cap
+        cue_conf = min(cue_conf, 1)
 
     # Auxiliary path only estimates diameter/confidence.
     # Center/identity must come from FOMO detection, not auxiliary cues.
