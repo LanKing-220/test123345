@@ -38,6 +38,17 @@ colors = [ # Add more colors if you are detecting more than 7 types of classes a
 ]
 
 threshold_list = [(math.ceil(min_confidence * 255), 255)]
+GREEN = (0, 255, 0)
+RED = (255, 0, 0)
+
+
+def estimate_ball_radius(w, h):
+    # OpenMV-friendly integer math: radius tracks detected bbox size.
+    # Use half of the larger side with a small margin so the circle encloses the ball.
+    r = ((max(w, h) * 11) + 10) // 20  # ~0.55 * max(w, h)
+    if r < 4:
+        return 4
+    return r
 
 def fomo_post_process(model, inputs, outputs):
     ob, oh, ow, oc = model.output_shape[0]
@@ -85,6 +96,15 @@ while(True):
             center_x = math.floor(x + (w / 2))
             center_y = math.floor(y + (h / 2))
             print(f"x {center_x}\ty {center_y}\tscore {score}")
-            img.draw_circle((center_x, center_y, 12), color=colors[i])
+
+            label_l = labels[i].lower()
+            if ("tennis" in label_l) and ("racket" not in label_l):
+                radius = estimate_ball_radius(w, h)
+                img.draw_circle((center_x, center_y, radius), color=GREEN)
+            elif "racket" in label_l:
+                img.draw_rectangle((x, y, w, h), color=RED)
+            else:
+                radius = 12
+                img.draw_circle((center_x, center_y, radius), color=colors[i])
 
     print(clock.fps(), "fps", end="\n\n")
