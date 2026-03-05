@@ -313,11 +313,9 @@ def estimate_tennis_diameter(img, x, y, w, h):
 
     d = clamp(d, 8, 210)
 
-    if hough_d is not None:
-        return d, hough_cx, hough_cy, cue_conf
-    if color_d is not None:
-        return d, color_cx, color_cy, cue_conf
-    return d, cx, cy, cue_conf
+    # Auxiliary path only estimates diameter/confidence.
+    # Center/identity must come from FOMO detection, not auxiliary cues.
+    return d, cue_conf
 
 
 def fuse_tennis_radius(w, h, detected_diameter):
@@ -439,8 +437,12 @@ while(True):
 
             label_l = labels[i].lower()
             if ("tennis" in label_l) and ("racket" not in label_l):
-                detected_diameter, assist_cx, assist_cy, cue_conf = estimate_tennis_diameter(img, x, y, w, h)
+                detected_diameter, cue_conf = estimate_tennis_diameter(img, x, y, w, h)
                 radius = fuse_tennis_radius(w, h, detected_diameter)
+
+                # FOMO is the only source for tennis recognition and center.
+                assist_cx = center_x
+                assist_cy = center_y
 
                 tid = match_tennis_track(assist_cx, assist_cy, used_track_ids, max(w, h))
                 if tid is None:
