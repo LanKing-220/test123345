@@ -5,6 +5,14 @@ from ultralytics import YOLO
 from pathlib import Path
 import cv2
 
+
+def find_latest_best_model():
+    """Find the newest best.pt under runs/detect."""
+    candidates = list(Path('runs/detect').glob('**/weights/best.pt'))
+    if not candidates:
+        return None
+    return str(max(candidates, key=lambda p: p.stat().st_mtime))
+
 def predict_yolov8():
     """使用YOLOv8进行预测"""
 
@@ -13,10 +21,10 @@ def predict_yolov8():
     print("="*70)
 
     # 加载最佳模型
-    model_path = 'runs/detect/runs/detect/yolov8n_tennis2/weights/best.pt'
+    model_path = find_latest_best_model()
 
-    if not Path(model_path).exists():
-        print(f"✗ Model not found: {model_path}")
+    if not model_path or not Path(model_path).exists():
+        print("✗ No trained model found in runs/detect/**/weights/best.pt")
         return
 
     model = YOLO(model_path)
@@ -25,6 +33,9 @@ def predict_yolov8():
     # 查找测试图片
     test_dir = Path('data/tennis-export/testing')
     test_images = list(test_dir.glob('*.jpg'))[:10]
+    if not test_images:
+        print(f"✗ No test images found in: {test_dir}")
+        return
 
     results_dir = Path('predictions_v8')
     results_dir.mkdir(exist_ok=True)
@@ -43,7 +54,16 @@ def predict_yolov8():
 
         for idx, img_path in enumerate(test_images, 1):
             # 预测
-            results = model.predict(source=str(img_path), conf=0.5, save=False)
+            results = model.predict(
+                source=str(img_path),
+                conf=0.25,
+                iou=0.6,
+                imgsz=640,
+                augment=True,
+                max_det=30,
+                save=False,
+                verbose=False
+            )
 
             # 读取图片
             img = cv2.imread(str(img_path))

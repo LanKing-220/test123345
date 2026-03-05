@@ -9,6 +9,70 @@ import json
 import os
 import cv2
 import numpy as np
+import shutil
+
+
+def apply_motion_blur(image, kernel_size=9, angle=0):
+    """Apply directional motion blur to simulate camera/object movement."""
+    kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
+    kernel[kernel_size // 2, :] = 1.0
+
+    center = (kernel_size / 2 - 0.5, kernel_size / 2 - 0.5)
+    rotate_mat = cv2.getRotationMatrix2D(center, angle, 1.0)
+    kernel = cv2.warpAffine(kernel, rotate_mat, (kernel_size, kernel_size))
+    kernel_sum = np.sum(kernel)
+    if kernel_sum > 0:
+        kernel /= kernel_sum
+
+    return cv2.filter2D(image, -1, kernel)
+
+
+def augment_blurry_training_samples(yolo_dir):
+    """Create extra blurred training images and duplicate labels for robustness."""
+    train_images_dir = Path(yolo_dir) / 'images' / 'train'
+    train_labels_dir = Path(yolo_dir) / 'labels' / 'train'
+
+    image_files = list(train_images_dir.glob('*.jpg')) + list(train_images_dir.glob('*.jpeg')) + list(train_images_dir.glob('*.png'))
+    if not image_files:
+        print("! No training images found for blur augmentation")
+        return 0
+
+    created = 0
+    motion_angles = [0, 30, 60, 90, 120, 150]
+
+    for img_file in image_files:
+        if '_blur_g' in img_file.stem or '_blur_m' in img_file.stem:
+            continue
+
+        label_file = train_labels_dir / f"{img_file.stem}.txt"
+        if not label_file.exists():
+            continue
+
+        img = cv2.imread(str(img_file))
+        if img is None:
+            continue
+
+        # Gaussian blur sample
+        gaussian_path = img_file.with_name(f"{img_file.stem}_blur_g.jpg")
+        gaussian_label = train_labels_dir / f"{img_file.stem}_blur_g.txt"
+        if not gaussian_path.exists():
+            blur_g = cv2.GaussianBlur(img, (5, 5), 1.2)
+            cv2.imwrite(str(gaussian_path), blur_g)
+            shutil.copy2(label_file, gaussian_label)
+            created += 1
+
+        # Motion blur sample
+        motion_path = img_file.with_name(f"{img_file.stem}_blur_m.jpg")
+        motion_label = train_labels_dir / f"{img_file.stem}_blur_m.txt"
+        if not motion_path.exists():
+            angle = motion_angles[created % len(motion_angles)]
+            blur_m = apply_motion_blur(img, kernel_size=9, angle=angle)
+            cv2.imwrite(str(motion_path), blur_m)
+            shutil.copy2(label_file, motion_label)
+            created += 1
+
+    print(f"✓ Blurry augmentation created: {created} images")
+    return created
 
 def convert_labels_to_yolo_v8():
     """将标签转换为YOLO v8格式"""
@@ -127,6 +191,8 @@ def train_yolov8():
 
     # 转换数据集
     yaml_path = convert_labels_to_yolo_v8()
+    yolo_root = Path(yaml_path).parent
+    augment_blurry_training_samples(yolo_root)
 
     print("\n" + "="*70)
     print("YOLOv8n Training")
@@ -139,10 +205,32 @@ def train_yolov8():
     results = model.train(
         data=yaml_path,
         epochs=10,
-        imgsz=320,
+        imgsz=640,
         batch=8,
-        patience=5,
+        patience=20,
         device=0 if torch.cuda.is_available() else 'cpu',
+        optimizer='AdamW',
+        lr0=0.003,
+        lrf=0.1,
+        warmup_epochs=3,
+        weight_decay=0.0005,
+        cos_lr=True,
+        mosaic=0.8,
+        mixup=0.15,
+        copy_paste=0.1,
+        degrees=5.0,
+        translate=0.1,
+        scale=0.4,
+        shear=2.0,
+        perspective=0.0005,
+        hsv_h=0.02,
+        hsv_s=0.7,
+        hsv_v=0.4,
+        fliplr=0.5,
+        close_mosaic=10,
+        erasing=0.2,
+        label_smoothing=0.05,
+        seed=42,
         save=True,
         project='runs/detect',
         name='yolov8n_tennis'
