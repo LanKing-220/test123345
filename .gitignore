@@ -1,0 +1,29 @@
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.DS_Store
+
+# 模型文件（过大）
+*.pt
+*.pth
+*.onnx
+runs/detect/
+
+# 数据集（过大）
+data/yolo_dataset/images/
+data/yolo_dataset/labels/
+data/tennis-export/
+
+# 预测结果
+predictions_v8/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
