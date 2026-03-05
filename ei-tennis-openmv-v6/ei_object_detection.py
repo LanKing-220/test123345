@@ -40,15 +40,280 @@ colors = [ # Add more colors if you are detecting more than 7 types of classes a
 threshold_list = [(math.ceil(min_confidence * 255), 255)]
 GREEN = (0, 255, 0)
 RED = (255, 0, 0)
+last_ball_radius = None
+
+# Color tolerance controls (LAB):
+# Increase these values when lighting changes a lot, decrease to reduce false positives.
+COLOR_TOL_L_BASE = 12
+COLOR_TOL_A_BASE = 10
+COLOR_TOL_B_BASE = 10
+COLOR_TOL_L_EXTRA = 6
+COLOR_TOL_A_EXTRA = 6
+COLOR_TOL_B_EXTRA = 6
+
+# Final draw scale for the tennis circle radius.
+# Increase slightly (e.g. 1.20 -> 1.30) if circles still look too small.
+DRAW_RADIUS_SCALE = 1.0
+
+def clamp(v, lo, hi):
+    if v < lo:
+        return lo
+    if v > hi:
+        return hi
+    return v
+
+
+def build_tennis_color_threshold(img, x, y, w, h):
+    # Build dynamic LAB threshold from the center patch of the FOMO tennis bbox.
+    seed_w = max(6, (w * 2) // 5)
+    seed_h = max(6, (h * 2) // 5)
+    seed_x = clamp(x + (w - seed_w) // 2, 0, img.width() - 1)
+    seed_y = clamp(y + (h - seed_h) // 2, 0, img.height() - 1)
+    seed_w = clamp(seed_w, 1, img.width() - seed_x)
+    seed_h = clamp(seed_h, 1, img.height() - seed_y)
+
+    s = img.get_statistics(roi=(seed_x, seed_y, seed_w, seed_h))
+    l_mean = s.l_mean()
+    a_mean = s.a_mean()
+    b_mean = s.b_mean()
+
+    # Adaptive tolerance: base allowance + texture/lighting variation from stdev.
+    l_std = s.l_stdev()
+    a_std = s.a_stdev()
+    b_std = s.b_stdev()
+
+    tol_l = int(clamp(COLOR_TOL_L_BASE + COLOR_TOL_L_EXTRA + (l_std * 2), 10, 36))
+    tol_a = int(clamp(COLOR_TOL_A_BASE + COLOR_TOL_A_EXTRA + (a_std * 2), 8, 30))
+    tol_b = int(clamp(COLOR_TOL_B_BASE + COLOR_TOL_B_EXTRA + (b_std * 2), 8, 30))
+
+    l_lo = int(clamp(l_mean - tol_l, 0, 100))
+    l_hi = int(clamp(l_mean + tol_l, 0, 100))
+    a_lo = int(clamp(a_mean - tol_a, -128, 127))
+    a_hi = int(clamp(a_mean + tol_a, -128, 127))
+    b_lo = int(clamp(b_mean - tol_b, -128, 127))
+    b_hi = int(clamp(b_mean + tol_b, -128, 127))
+    return (l_lo, l_hi, a_lo, a_hi, b_lo, b_hi)
+
+
+def estimate_color_blob(img, roi, ref_cx, ref_cy):
+    # Use dynamic color prior to find the tennis-colored blob near FOMO center.
+    rx, ry, rw, rh = roi
+    thr = build_tennis_color_threshold(img, ref_cx - (rw // 6), ref_cy - (rh // 6), rw // 3, rh // 3)
+    blobs = img.find_blobs(
+        [thr],
+        roi=roi,
+        x_stride=1,
+        y_stride=1,
+        area_threshold=15,
+        pixels_threshold=15,
+        merge=True,
+        margin=6,
+    )
+
+    if not blobs:
+        return None, ref_cx, ref_cy
+
+    best = None
+    best_score = None
+    for b in blobs:
+        dx = b.cx() - ref_cx
+        dy = b.cy() - ref_cy
+        inside_ref = (b.x() <= ref_cx <= (b.x() + b.w())) and (b.y() <= ref_cy <= (b.y() + b.h()))
+
+        # Blob roundness proxy: prefer near-square blobs for tennis balls.
+        long_side = max(b.w(), b.h())
+        short_side = max(1, min(b.w(), b.h()))
+        ratio = (long_side * 100) // short_side
+        shape_penalty = abs(ratio - 100)
+
+        dist_cost = abs(dx) + abs(dy)
+        size_gain = b.pixels() // 6
+        center_bonus = 60 if inside_ref else 0
+        score = (dist_cost * 3) + shape_penalty - size_gain - center_bonus
+        if (best_score is None) or (score < best_score):
+            best_score = score
+            best = b
+
+    if best is None:
+        return None, ref_cx, ref_cy
+
+    # Use equivalent-circle diameter from area for a less under-sized estimate.
+    eq_d = int(math.sqrt((4.0 * best.pixels()) / math.pi))
+    blob_d = max(best.w(), best.h())
+    color_d = max(eq_d, blob_d)
+    return color_d, best.cx(), best.cy()
+
+
+def estimate_edge_strength(img, roi):
+    # Edge map confidence for circle fit reliability.
+    edge_img = img.copy(roi=roi)
+    edge_img.to_grayscale()
+    edge_img.find_edges(image.EDGE_CANNY, threshold=(40, 80))
+    return edge_img.get_statistics().l_mean()
+
+
+def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength):
+    # Local Hough circle fit guided by FOMO center and optional color center.
+    hough_threshold = 2600 if edge_strength >= 24 else 2300
+    r_guess = max(3, r_guess)
+    r_min = max(3, (r_guess * 6) // 10)
+    r_max = min(105, (r_guess * 15) // 10)
+
+    circles = img.find_circles(
+        roi=roi,
+        threshold=hough_threshold,
+        x_margin=6,
+        y_margin=6,
+        r_margin=6,
+        r_min=r_min,
+        r_max=r_max,
+        r_step=1,
+    )
+
+    if not circles:
+        return None, ref_cx, ref_cy
+
+    best = None
+    best_score = None
+    for c in circles:
+        dx = c.x() - ref_cx
+        dy = c.y() - ref_cy
+        center_cost = abs(dx) + abs(dy)
+        radius_cost = abs(c.r() - r_guess)
+
+        # Prefer larger circles if center fit is acceptable.
+        score = (center_cost * 2) + radius_cost - (c.r() // 2)
+        if (best_score is None) or (score < best_score):
+            best_score = score
+            best = c
+
+    if best is None:
+        return None, ref_cx, ref_cy
+
+    return best.r() * 2, best.x(), best.y()
+
+
+def estimate_tennis_diameter(img, x, y, w, h):
+    # Multi-cue diameter estimation:
+    # FOMO bbox -> color prior -> edge confidence -> Hough circle.
+    # FOMO bbox is often center-biased; use a larger ROI for full-ball size cues.
+    pad = max(12, max(w, h))
+    rx = clamp(x - pad, 0, img.width() - 1)
+    ry = clamp(y - pad, 0, img.height() - 1)
+    rw = clamp(w + (pad * 2), 1, img.width() - rx)
+    rh = clamp(h + (pad * 2), 1, img.height() - ry)
+    roi = (rx, ry, rw, rh)
+
+    cx = x + (w // 2)
+    cy = y + (h // 2)
+    bbox_d = max(w, h)
+
+    color_d, color_cx, color_cy = estimate_color_blob(img, roi, cx, cy)
+    edge_strength = estimate_edge_strength(img, roi)
+
+    if color_d is not None:
+        hough_guess = max(color_d // 2, bbox_d // 2)
+    else:
+        hough_guess = max(5, (bbox_d * 8) // 10)
+    hough_d, hough_cx, hough_cy = estimate_hough_circle(
+        img,
+        roi,
+        color_cx,
+        color_cy,
+        hough_guess,
+        edge_strength,
+    )
+
+    if (hough_d is not None) and (color_d is not None):
+        # Avoid tiny circles: keep the larger cue when they differ too much.
+        if abs(hough_d - color_d) <= 10:
+            d = ((hough_d * 5) + (color_d * 5)) // 10
+        else:
+            d = max(hough_d, color_d)
+    elif hough_d is not None:
+        d = hough_d
+    elif color_d is not None:
+        d = color_d
+    else:
+        d = int((bbox_d * 13) // 10)
+
+    d = clamp(d, 8, 210)
+
+    if hough_d is not None:
+        return d, hough_cx, hough_cy
+    if color_d is not None:
+        return d, color_cx, color_cy
+    return d, cx, cy
+
+
+def fuse_tennis_radius(w, h, detected_diameter):
+    # Near-field robust radius:
+    # combine circle fit with bbox-based estimate to avoid under-sized circles.
+    circle_r = detected_diameter // 2
+    bbox_r = estimate_ball_radius(w, h)
+
+    # When ball is close (large bbox), trust the larger radius more.
+    if max(w, h) >= 20:
+        r = max(circle_r, bbox_r)
+    else:
+        # Far/mid range keeps circle fit dominant while retaining a safety floor.
+        r = max(circle_r, (bbox_r * 9) // 10)
+
+    # Final inflation compensates for partial edges/texture that underestimate radius.
+    r = int((r * DRAW_RADIUS_SCALE) + 0.5)
+    return clamp(r, 4, 105)
 
 
 def estimate_ball_radius(w, h):
-    # OpenMV-friendly integer math: radius tracks detected bbox size.
-    # Use half of the larger side with a small margin so the circle encloses the ball.
-    r = ((max(w, h) * 11) + 10) // 20  # ~0.55 * max(w, h)
+    # Make radius follow distance more clearly:
+    # near ball => larger bbox => larger circle.
+    mx = max(w, h)
+    r = ((mx * 13) + 10) // 20  # ~0.65 * max(w, h)
+
+    # Add a small boost for large nearby balls.
+    area = w * h
+    if area >= 900:
+        r += 3
+    elif area >= 400:
+        r += 2
+
     if r < 4:
         return 4
+    if r > 55:
+        return 55
     return r
+
+
+def smooth_ball_radius(curr_r, prev_r):
+    # Radius smoothing for stable overlay on noisy detections:
+    # 1) deadband suppresses tiny jitter
+    # 2) step limit avoids sudden jumps
+    # 3) EMA keeps motion smooth
+    if prev_r is None:
+        return curr_r
+
+    diff = curr_r - prev_r
+
+    # Ignore tiny changes to prevent flicker.
+    if -2 <= diff <= 2:
+        return prev_r
+
+    # Adaptive step limit:
+    # grow faster when object comes near, shrink slower for stability.
+    up_step = 8 if prev_r < 24 else 12
+    down_step = 5
+    if diff > up_step:
+        curr_r = prev_r + up_step
+    elif diff < -down_step:
+        curr_r = prev_r - down_step
+
+    # Adaptive EMA: faster response on growth, smoother on shrink.
+    if curr_r >= prev_r:
+        # 65% previous + 35% current
+        return ((prev_r * 13) + (curr_r * 7)) // 20
+
+    # 80% previous + 20% current
+    return ((prev_r * 8) + (curr_r * 2)) // 10
 
 def fomo_post_process(model, inputs, outputs):
     ob, oh, ow, oc = model.output_shape[0]
@@ -86,6 +351,7 @@ while(True):
     clock.tick()
 
     img = sensor.snapshot()
+    tennis_seen_in_frame = False
 
     for i, detection_list in enumerate(net.predict([img], callback=fomo_post_process)):
         if i == 0: continue  # background class
@@ -99,12 +365,20 @@ while(True):
 
             label_l = labels[i].lower()
             if ("tennis" in label_l) and ("racket" not in label_l):
-                radius = estimate_ball_radius(w, h)
-                img.draw_circle((center_x, center_y, radius), color=GREEN)
+                tennis_seen_in_frame = True
+                detected_diameter, assist_cx, assist_cy = estimate_tennis_diameter(img, x, y, w, h)
+                radius = fuse_tennis_radius(w, h, detected_diameter)
+                smooth_radius = smooth_ball_radius(radius, last_ball_radius)
+                last_ball_radius = smooth_radius
+                img.draw_circle((assist_cx, assist_cy, smooth_radius), color=GREEN)
             elif "racket" in label_l:
                 img.draw_rectangle((x, y, w, h), color=RED)
             else:
                 radius = 12
                 img.draw_circle((center_x, center_y, radius), color=colors[i])
+
+    if not tennis_seen_in_frame:
+        # Avoid stale radius affecting a newly appearing far/near ball.
+        last_ball_radius = None
 
     print(clock.fps(), "fps", end="\n\n")
