@@ -15,91 +15,112 @@ def correct_tennis_distance(distance_cm, radius):
     else:
         factor = 1.25
     return distance_cm * factor
-# Edge Impulse - OpenMV FOMO Object Detection Example
-#
-# This work is licensed under the MIT license.
-# Copyright (c) 2013-2024 OpenMV LLC. All rights reserved.
-# https://github.com/openmv/openmv/blob/master/LICENSE
+
+# Edge Impulse - OpenMV FOMO 目标检测示例
+# 本代码用于网球场景的目标检测、距离估算与可视化，所有注释均为中文。
+
 
 import sensor, image, time, ml, math, uos, gc
 
-sensor.reset()                         # Reset and initialize the sensor.
-sensor.set_pixformat(sensor.RGB565)    # Set pixel format to RGB565 (or GRAYSCALE)
-sensor.set_framesize(sensor.QVGA)      # Set frame size to QVGA (320x240)
-sensor.set_windowing((240, 240))       # Set 240x240 window.
-sensor.skip_frames(time=2000)          # Let the camera adjust.
+sensor.reset()                         # 复位并初始化摄像头
+sensor.set_pixformat(sensor.RGB565)    # 设置像素格式为RGB565（或灰度）
+sensor.set_framesize(sensor.QVGA)      # 设置分辨率为QVGA（320x240）
+sensor.set_windowing((240, 240))       # 设置窗口为240x240
+sensor.skip_frames(time=2000)          # 等待摄像头自动调整
 
 net = None
 labels = None
 min_confidence = 0.5
 
+
 try:
-    # load the model, alloc the model file on the heap if we have at least 64K free after loading
+    # 加载模型，若内存充足则分配到堆上
     net = ml.Model("trained.tflite", load_to_fb=uos.stat('trained.tflite')[6] > (gc.mem_free() - (64*1024)))
 except Exception as e:
-    raise Exception('Failed to load "trained.tflite", did you copy the .tflite and labels.txt file onto the mass-storage device? (' + str(e) + ')')
+    raise Exception('模型加载失败，请确认.tflite和labels.txt已复制到设备 (' + str(e) + ')')
+
 
 try:
     labels = [line.rstrip('\n') for line in open("labels.txt")]
 except Exception as e:
-    raise Exception('Failed to load "labels.txt", did you copy the .tflite and labels.txt file onto the mass-storage device? (' + str(e) + ')')
+    raise Exception('标签文件加载失败，请确认labels.txt已复制到设备 (' + str(e) + ')')
 
-colors = [ # Add more colors if you are detecting more than 7 types of classes at once.
-    (255,   0,   0),
-    (  0, 255,   0),
-    (255, 255,   0),
-    (  0,   0, 255),
-    (255,   0, 255),
-    (  0, 255, 255),
-    (255, 255, 255),
+
+# 目标类别颜色列表（按类别顺序，RGB格式）。如需支持更多类别可扩展。
+colors = [
+    (255,   0,   0),   # 红色
+    (  0, 255,   0),   # 绿色
+    (255, 255,   0),   # 黄色
+    (  0,   0, 255),   # 蓝色
+    (255,   0, 255),   # 品红
+    (  0, 255, 255),   # 青色
+    (255, 255, 255),   # 白色
 ]
 
 
-# 各类别置信度阈值
-THRESH_TENNIS = 0.5
-THRESH_PLAYER = 0.4
-THRESH_RACKET = 0.7
-threshold_list = [(math.ceil(THRESH_TENNIS * 255), 255)]
-GREEN = (0, 255, 0)
-RED = (255, 0, 0)
-tennis_tracks = {}
-next_track_id = 1
 
-# Color tolerance controls (LAB):
-# Increase these values when lighting changes a lot, decrease to reduce false positives.
-COLOR_TOL_L_BASE = 12
-COLOR_TOL_A_BASE = 10
-COLOR_TOL_B_BASE = 10
-COLOR_TOL_L_EXTRA = 3
-COLOR_TOL_A_EXTRA = 3
-COLOR_TOL_B_EXTRA = 3.5
+# 各类别置信度阈值（可根据实际模型表现调整）
+THRESH_TENNIS = 0.5   # 网球置信度阈值
+THRESH_PLAYER = 0.4   # 球员置信度阈值
+THRESH_RACKET = 0.7   # 球拍置信度阈值
+threshold_list = [(math.ceil(THRESH_TENNIS * 255), 255)]  # 用于二值化的亮度阈值
 
-# Final draw scale for the tennis circle radius.
-# Increase slightly (e.g. 1.20 -> 1.30) if circles still look too small.
-DRAW_RADIUS_SCALE = 1.15
+# 常用颜色常量
+GREEN = (0, 255, 0)   # 绿色（网球圈用）
+RED = (255, 0, 0)     # 红色（球拍框用）
 
-# Distance-adaptive controls for far-ball stability.
-ROI_NEAR_SWITCH = 26
-FAR_ROI_PAD_MIN = 6
-MAX_COLOR_BLOB_AREA_MULT = 6
-TRACK_MAX_MISS = 6
+# 网球目标跟踪相关
+tennis_tracks = {}     # 记录每个网球的轨迹信息
+next_track_id = 1      # 下一个可用的轨迹ID
 
-# Edge and circle constraints.
-EDGE_LOW_TH = 55
-EDGE_HIGH_TH = 110
 
-# Strong-light handling for small balls on reflective floor.
-GLARE_L_TH = 88
-GLARE_RATIO_TH_PCT = 18
-SMALL_BALL_SIZE_TH = 24
-GLARE_DIAMETER_CAP_PCT = 115
+# LAB颜色容差参数（影响颜色分割灵敏度）
+# 光照变化大时可适当增大，误检多时可减小
+COLOR_TOL_L_BASE = 12      # L通道基础容差
+COLOR_TOL_A_BASE = 10      # A通道基础容差
+COLOR_TOL_B_BASE = 10      # B通道基础容差
+COLOR_TOL_L_EXTRA = 3      # L通道额外自适应容差
+COLOR_TOL_A_EXTRA = 3      # A通道额外自适应容差
+COLOR_TOL_B_EXTRA = 3.5    # B通道额外自适应容差
 
-# Radius lock controls: freeze radius for a few frames when cues become unstable.
-RADIUS_LOCK_HOLD = 4
-RADIUS_JUMP_ABS = 6
-RADIUS_JUMP_RATIO_PCT = 35
+
+# 网球圆圈半径最终放大系数
+# 若圈偏小可适当增大（如1.20->1.30）
+DRAW_RADIUS_SCALE = 1.15   # 半径放大比例
+
+
+# 远距离网球检测的自适应参数
+ROI_NEAR_SWITCH = 26           # ROI切换阈值，近远场分界
+FAR_ROI_PAD_MIN = 6            # 远距离时ROI最小扩展像素
+MAX_COLOR_BLOB_AREA_MULT = 6   # 颜色分割最大面积系数
+TRACK_MAX_MISS = 6             # 轨迹最大丢失帧数
+
+
+# 边缘与圆检测参数
+EDGE_LOW_TH = 55   # Canny边缘检测低阈值
+EDGE_HIGH_TH = 110 # Canny边缘检测高阈值
+
+
+# 强光/反光地面下小球的特殊处理参数
+GLARE_L_TH = 88                # LAB L通道高亮阈值
+GLARE_RATIO_TH_PCT = 18        # 高亮像素比例阈值（%）
+SMALL_BALL_SIZE_TH = 24        # 小球像素尺寸阈值
+GLARE_DIAMETER_CAP_PCT = 115   # 强光下直径上限百分比
+
+
+# 半径锁定参数：当检测不稳定时锁定半径若干帧，抑制突变
+RADIUS_LOCK_HOLD = 4       # 锁定帧数
+RADIUS_JUMP_ABS = 6        # 半径突变绝对阈值
+RADIUS_JUMP_RATIO_PCT = 35 # 半径突变相对百分比
 
 def clamp(v, lo, hi):
+    # 【通用工具函数】将输入v限制在[lo, hi]闭区间内，防止越界。
+    # 参数：
+    #   v  —— 需要限制的数值
+    #   lo —— 区间下界
+    #   hi —— 区间上界
+    # 返回：
+    #   若v小于下界，返回lo；若v大于上界，返回hi；否则返回v本身
     if v < lo:
         return lo
     if v > hi:
@@ -108,83 +129,109 @@ def clamp(v, lo, hi):
 
 
 def match_tennis_track(cx, cy, used_track_ids, hint_size):
-    # Match current detection to an existing tennis track (nearest valid center).
-    best_id = None
-    best_d2 = None
-    gate = max(18, hint_size * 2)
+    # 【轨迹匹配函数】将当前检测到的网球中心(cx, cy)与历史轨迹进行最近邻匹配，返回最优轨迹ID。
+    # 参数：
+    #   cx, cy         —— 当前检测到的网球中心坐标（像素）
+    #   used_track_ids —— 本帧已分配的轨迹ID列表，避免重复分配
+    #   hint_size      —— 当前检测框的尺寸，用于动态调整匹配门限
+    # 返回：
+    #   best_id —— 匹配到的轨迹ID（若无合适轨迹则为None）
+    best_id = None  # 最优轨迹ID
+    best_d2 = None  # 最小距离平方
+    gate = max(18, hint_size * 2)  # 匹配门限，防止远距离误匹配
     gate2 = gate * gate
 
     for tid in tennis_tracks:
         if tid in used_track_ids:
-            continue
+            continue  # 跳过本帧已分配的轨迹
         tx, ty, tr, miss, lock_count = tennis_tracks[tid]
         dx = cx - tx
         dy = cy - ty
-        d2 = (dx * dx) + (dy * dy)
-        local_gate = max(gate2, (tr * tr * 4))
+        d2 = (dx * dx) + (dy * dy)  # 欧氏距离平方
+        local_gate = max(gate2, (tr * tr * 4))  # 动态门限，近距离更严格
         if d2 > local_gate:
-            continue
+            continue  # 距离过远不匹配
         if (best_d2 is None) or (d2 < best_d2):
             best_d2 = d2
             best_id = tid
 
-    return best_id
+    return best_id  # 若无合适轨迹则返回None
 
 
 def age_and_prune_tracks(used_track_ids):
-    # Increase miss count for unmatched tracks and prune stale tracks.
-    stale = []
+    # 【轨迹老化与清理】对未被当前帧匹配到的轨迹，增加丢失计数，超限后删除。
+    # 参数：
+    #   used_track_ids —— 本帧已分配的轨迹ID列表
+    # 作用：防止轨迹无限增长，及时清理丢失目标
+    stale = []  # 记录需清理的轨迹ID
     for tid in list(tennis_tracks.keys()):
         if tid in used_track_ids:
-            continue
+            continue  # 本帧已匹配到的轨迹不处理
         tx, ty, tr, miss, lock_count = tennis_tracks[tid]
-        miss += 1
+        miss += 1  # 丢失帧数+1
         if miss > TRACK_MAX_MISS:
-            stale.append(tid)
+            stale.append(tid)  # 超过最大丢失帧数，标记为过期
         else:
-            tennis_tracks[tid] = (tx, ty, tr, miss, lock_count)
+            tennis_tracks[tid] = (tx, ty, tr, miss, lock_count)  # 更新丢失计数
 
     for tid in stale:
-        tennis_tracks.pop(tid)
+        tennis_tracks.pop(tid)  # 删除过期轨迹
 
 
 def build_tennis_color_threshold(img, x, y, w, h):
-    # Build dynamic LAB threshold from the center patch of the FOMO tennis bbox.
-    seed_w = max(6, (w * 2) // 5)
-    seed_h = max(6, (h * 2) // 5)
-    seed_x = clamp(x + (w - seed_w) // 2, 0, img.width() - 1)
+    # 【动态颜色阈值生成】根据检测框中心区域的LAB均值和方差，自适应生成颜色分割阈值。
+    # 参数：
+    #   img —— 当前帧图像
+    #   x, y, w, h —— 检测框左上角坐标及宽高
+    # 返回：
+    #   (l_lo, l_hi, a_lo, a_hi, b_lo, b_hi) —— LAB颜色空间的上下界元组
+    # 步骤：
+    # 1. 选取检测框中心区域作为种子区域，避免边缘干扰
+    seed_w = max(6, (w * 2) // 5)  # 种子区域宽度，最小6像素
+    seed_h = max(6, (h * 2) // 5)  # 种子区域高度，最小6像素
+    seed_x = clamp(x + (w - seed_w) // 2, 0, img.width() - 1)  # 居中
     seed_y = clamp(y + (h - seed_h) // 2, 0, img.height() - 1)
     seed_w = clamp(seed_w, 1, img.width() - seed_x)
     seed_h = clamp(seed_h, 1, img.height() - seed_y)
 
+    # 2. 计算种子区域的LAB均值和标准差
     s = img.get_statistics(roi=(seed_x, seed_y, seed_w, seed_h))
     l_mean = s.l_mean()
     a_mean = s.a_mean()
     b_mean = s.b_mean()
-
-    # Adaptive tolerance: base allowance + texture/lighting variation from stdev.
     l_std = s.l_stdev()
     a_std = s.a_stdev()
     b_std = s.b_stdev()
 
-    # Tightened tolerance window to reduce color over-segmentation.
+    # 3. 根据基础容差+自适应分量，动态调整容差范围，防止过分分割
     tol_l = int(clamp(COLOR_TOL_L_BASE + COLOR_TOL_L_EXTRA + l_std, 8, 24))
     tol_a = int(clamp(COLOR_TOL_A_BASE + COLOR_TOL_A_EXTRA + a_std, 6, 18))
     tol_b = int(clamp(COLOR_TOL_B_BASE + COLOR_TOL_B_EXTRA + b_std, 6, 18))
 
+    # 4. 计算LAB各通道上下界，防止越界
     l_lo = int(clamp(l_mean - tol_l, 0, 100))
     l_hi = int(clamp(l_mean + tol_l, 0, 100))
     a_lo = int(clamp(a_mean - tol_a, -128, 127))
     a_hi = int(clamp(a_mean + tol_a, -128, 127))
     b_lo = int(clamp(b_mean - tol_b, -128, 127))
     b_hi = int(clamp(b_mean + tol_b, -128, 127))
-    return (l_lo, l_hi, a_lo, a_hi, b_lo, b_hi)
+    return (l_lo, l_hi, a_lo, a_hi, b_lo, b_hi)  # 返回LAB阈值元组
 
 
 def estimate_color_blob(img, roi, ref_cx, ref_cy, bbox_d):
-    # Use dynamic color prior to find the tennis-colored blob near FOMO center.
+    # 【颜色分割辅助检测】利用动态颜色阈值，在FOMO中心附近ROI内寻找最可能的网球色块。
+    # 参数：
+    #   img      —— 当前帧图像
+    #   roi      —— 感兴趣区域(左上x, 左上y, 宽, 高)
+    #   ref_cx, ref_cy —— FOMO检测中心点
+    #   bbox_d   —— 检测框最大边长
+    # 返回：
+    #   color_d  —— 估算的等效直径（像素），若无则None
+    #   best.cx(), best.cy() —— 色块中心坐标
     rx, ry, rw, rh = roi
+    # 1. 以FOMO中心为种子，生成自适应颜色阈值
     thr = build_tennis_color_threshold(img, ref_cx - (rw // 6), ref_cy - (rh // 6), rw // 3, rh // 3)
+    # 2. 在ROI内查找色块
     blobs = img.find_blobs(
         [thr],
         roi=roi,
@@ -197,29 +244,29 @@ def estimate_color_blob(img, roi, ref_cx, ref_cy, bbox_d):
     )
 
     if not blobs:
-        return None, ref_cx, ref_cy
+        return None, ref_cx, ref_cy  # 未找到色块，返回原中心
 
+    # 3. 选择最优色块：面积不过大、中心靠近FOMO中心、形状接近正方形
     best = None
     best_score = None
-    max_blob_area = max(36, bbox_d * bbox_d * MAX_COLOR_BLOB_AREA_MULT)
+    max_blob_area = max(36, bbox_d * bbox_d * MAX_COLOR_BLOB_AREA_MULT)  # 最大允许面积
     for b in blobs:
-        # Reject oversized color regions that usually come from background when ball is far.
         if b.pixels() > max_blob_area:
-            continue
+            continue  # 面积过大，通常为背景
 
         dx = b.cx() - ref_cx
         dy = b.cy() - ref_cy
         inside_ref = (b.x() <= ref_cx <= (b.x() + b.w())) and (b.y() <= ref_cy <= (b.y() + b.h()))
 
-        # Blob roundness proxy: prefer near-square blobs for tennis balls.
+        # 形状惩罚：越接近正方形越优
         long_side = max(b.w(), b.h())
         short_side = max(1, min(b.w(), b.h()))
         ratio = (long_side * 100) // short_side
         shape_penalty = abs(ratio - 100)
 
-        dist_cost = abs(dx) + abs(dy)
-        size_gain = b.pixels() // 6
-        center_bonus = 60 if inside_ref else 0
+        dist_cost = abs(dx) + abs(dy)  # 距离惩罚
+        size_gain = b.pixels() // 6    # 面积奖励
+        center_bonus = 60 if inside_ref else 0  # 中心包含奖励
         score = (dist_cost * 3) + shape_penalty - size_gain - center_bonus
         if (best_score is None) or (score < best_score):
             best_score = score
@@ -228,7 +275,7 @@ def estimate_color_blob(img, roi, ref_cx, ref_cy, bbox_d):
     if best is None:
         return None, ref_cx, ref_cy
 
-    # Use equivalent-circle diameter from area for a less under-sized estimate.
+    # 4. 用等效圆直径（面积反推）和最大边长取最大，防止低估
     eq_d = int(math.sqrt((4.0 * best.pixels()) / math.pi))
     blob_d = max(best.w(), best.h())
     color_d = max(eq_d, blob_d)
@@ -236,15 +283,25 @@ def estimate_color_blob(img, roi, ref_cx, ref_cy, bbox_d):
 
 
 def estimate_edge_strength(img, roi):
-    # Edge map confidence for circle fit reliability.
+    # 【边缘强度估算】对ROI区域做Canny边缘检测，返回亮度均值作为边缘强度。
+    # 参数：
+    #   img —— 当前帧图像
+    #   roi —— 感兴趣区域(左上x, 左上y, 宽, 高)
+    # 返回：
+    #   边缘图像的亮度均值，数值越大边缘越明显
     edge_img = img.copy(roi=roi)
-    edge_img.to_grayscale()
+    edge_img.to_grayscale()  # 转灰度
     edge_img.find_edges(image.EDGE_CANNY, threshold=(EDGE_LOW_TH, EDGE_HIGH_TH))
     return edge_img.get_statistics().l_mean()
 
 
 def estimate_glare_ratio_pct(img, roi):
-    # Estimate % of very bright pixels in ROI using LAB L channel threshold.
+    # 【高亮比例估算】统计ROI区域内高亮像素占比，用于判断强光/反光干扰。
+    # 参数：
+    #   img —— 当前帧图像
+    #   roi —— 感兴趣区域(左上x, 左上y, 宽, 高)
+    # 返回：
+    #   高亮像素占ROI总像素的百分比（0~100）
     bright_blobs = img.find_blobs(
         [(GLARE_L_TH, 100, -128, 127, -128, 127)],
         roi=roi,
@@ -256,7 +313,7 @@ def estimate_glare_ratio_pct(img, roi):
         margin=1,
     )
     if not bright_blobs:
-        return 0
+        return 0  # 无高亮像素
 
     bright_pixels = 0
     for b in bright_blobs:
@@ -267,7 +324,17 @@ def estimate_glare_ratio_pct(img, roi):
 
 
 def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glare_ratio_pct):
-    # Local Hough circle fit guided by FOMO center and optional color center.
+    # 【霍夫圆辅助检测】在ROI内以FOMO中心为引导，利用边缘和高亮信息自适应参数，检测最优圆。
+    # 参数：
+    #   img —— 当前帧图像
+    #   roi —— 感兴趣区域(左上x, 左上y, 宽, 高)
+    #   ref_cx, ref_cy —— FOMO检测中心点
+    #   r_guess —— 预估半径
+    #   edge_strength —— 边缘强度
+    #   glare_ratio_pct —— 高亮比例
+    # 返回：
+    #   (直径, 圆心x, 圆心y)，若无则None, ref_cx, ref_cy
+    # 1. 根据高亮和边缘自适应调整霍夫阈值
     if glare_ratio_pct >= GLARE_RATIO_TH_PCT:
         hough_threshold = 3300 if edge_strength >= 24 else 2900
     else:
@@ -277,9 +344,10 @@ def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glar
     r_min = max(3, (r_guess * 7) // 10)
     r_max = min(105, (r_guess * 13) // 10)
     if glare_ratio_pct >= GLARE_RATIO_TH_PCT:
-        # Reflective floor often creates over-sized circles: shrink search upper bound.
+        # 反光地面易出大圆，收紧上界
         r_max = max(r_min, (r_max * 9) // 10)
 
+    # 2. 查找所有圆
     circles = img.find_circles(
         roi=roi,
         threshold=hough_threshold,
@@ -294,6 +362,7 @@ def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glar
     if not circles:
         return None, ref_cx, ref_cy
 
+    # 3. 选择最优圆：中心靠近FOMO中心，半径接近预估，略偏大优先
     best = None
     best_score = None
     for c in circles:
@@ -301,8 +370,6 @@ def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glar
         dy = c.y() - ref_cy
         center_cost = abs(dx) + abs(dy)
         radius_cost = abs(c.r() - r_guess)
-
-        # Keep slight large-circle preference, but weaker to avoid over-sized circles.
         score = (center_cost * 2) + radius_cost - (c.r() // 4)
         if (best_score is None) or (score < best_score):
             best_score = score
@@ -315,10 +382,15 @@ def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glar
 
 
 def estimate_tennis_diameter(img, x, y, w, h):
-    # Multi-cue diameter estimation:
-    # FOMO bbox -> color prior -> edge confidence -> Hough circle.
-    # Distance-adaptive ROI:
-    # far balls use smaller ROI to avoid background color pollution.
+    # 【网球直径多线索估算】融合FOMO检测框、颜色分割、边缘、圆检测等多种信息，鲁棒估计网球像素直径。
+    # 参数：
+    #   img —— 当前帧图像
+    #   x, y, w, h —— FOMO检测框左上角及宽高
+    # 返回：
+    #   d —— 估算的像素直径
+    #   cue_conf —— 置信度（2:双线索一致，1:单线索，0:仅检测框）
+    # 步骤：
+    # 1. ROI自适应：远距离小球用更小ROI，近距离适当放大
     ball_size = max(w, h)
     if ball_size < ROI_NEAR_SWITCH:
         pad = max(FAR_ROI_PAD_MIN, (ball_size * 2) // 3)
@@ -334,10 +406,13 @@ def estimate_tennis_diameter(img, x, y, w, h):
     cy = y + (h // 2)
     bbox_d = max(w, h)
 
+    # 2. 颜色分割辅助估算
     color_d, color_cx, color_cy = estimate_color_blob(img, roi, cx, cy, bbox_d)
+    # 3. 边缘强度与高亮比例
     edge_strength = estimate_edge_strength(img, roi)
     glare_ratio_pct = estimate_glare_ratio_pct(img, roi)
 
+    # 4. 霍夫圆辅助估算
     if color_d is not None:
         hough_guess = max(color_d // 2, bbox_d // 2)
     else:
@@ -352,9 +427,10 @@ def estimate_tennis_diameter(img, x, y, w, h):
         glare_ratio_pct,
     )
 
+    # 5. 多线索融合：
     cue_conf = 0
     if (hough_d is not None) and (color_d is not None):
-        # Avoid tiny circles: keep the larger cue when they differ too much.
+        # 两线索接近则加权平均，否则取较大值
         if abs(hough_d - color_d) <= 10:
             d = ((hough_d * 5) + (color_d * 5)) // 10
             cue_conf = 2
@@ -368,48 +444,51 @@ def estimate_tennis_diameter(img, x, y, w, h):
         d = color_d
         cue_conf = 1
     else:
-        d = int((bbox_d * 13) // 10)
+        d = int((bbox_d * 13) // 10)  # 仅用检测框估算
         cue_conf = 0
 
-    d = clamp(d, 8, 210)
+    d = clamp(d, 8, 210)  # 防止极端值
 
-    # Strong-light guard for far/small balls: avoid over-sized radius from reflections.
+    # 6. 强光/远距离保护：防止反光导致半径过大
     if (ball_size <= SMALL_BALL_SIZE_TH) and (glare_ratio_pct >= GLARE_RATIO_TH_PCT):
         glare_cap = max(8, (bbox_d * GLARE_DIAMETER_CAP_PCT) // 100)
         if d > glare_cap:
             d = glare_cap
         cue_conf = min(cue_conf, 1)
 
-    # Auxiliary path only estimates diameter/confidence.
-    # Center/identity must come from FOMO detection, not auxiliary cues.
+    # 仅估算直径和置信度，中心点仍以FOMO为准
     return d, cue_conf
 
 
 def fuse_tennis_radius(w, h, detected_diameter):
-    # Near-field robust radius:
-    # combine circle fit with bbox-based estimate to avoid under-sized circles.
-    circle_r = detected_diameter // 2
-    bbox_r = estimate_ball_radius(w, h)
+    # 【半径融合】结合圆拟合和检测框尺寸，获得更稳健的网球半径估算。
+    # 参数：
+    #   w, h —— 检测框宽高
+    #   detected_diameter —— 多线索估算的直径
+    # 返回：
+    #   r —— 最终用于绘制和输出的半径
+    circle_r = detected_diameter // 2  # 圆拟合半径
+    bbox_r = estimate_ball_radius(w, h)  # 检测框推算半径
 
-    # When ball is close (large bbox), trust the larger radius more.
+    # 近距离（大框）优先取较大半径，远距离以圆拟合为主但保底
     if max(w, h) >= 20:
         r = max(circle_r, bbox_r)
     else:
-        # Far/mid range keeps circle fit dominant while retaining a safety floor.
         r = max(circle_r, (bbox_r * 9) // 10)
 
-    # Final inflation compensates for partial edges/texture that underestimate radius.
+    # 最终放大系数，补偿边缘/纹理导致的低估
     r = int((r * DRAW_RADIUS_SCALE) + 0.5)
-    return clamp(r, 4, 105)
+    return clamp(r, 4, 105)  # 限制合理范围
 
 
 def estimate_ball_radius(w, h):
-    # Make radius follow distance more clearly:
-    # near ball => larger bbox => larger circle.
+    # 【检测框半径估算】仅根据检测框尺寸推算半径，近大远小。
+    # 参数：w, h —— 检测框宽高
+    # 返回：r —— 推算半径
     mx = max(w, h)
-    r = ((mx * 13) + 10) // 20  # ~0.65 * max(w, h)
+    r = ((mx * 13) + 10) // 20  # 约0.65倍最大边长
 
-    # Add a small boost for large nearby balls.
+    # 大面积（近距离）适当补偿
     area = w * h
     if area >= 900:
         r += 3
@@ -424,21 +503,22 @@ def estimate_ball_radius(w, h):
 
 
 def smooth_ball_radius(curr_r, prev_r):
-    # Radius smoothing for stable overlay on noisy detections:
-    # 1) deadband suppresses tiny jitter
-    # 2) step limit avoids sudden jumps
-    # 3) EMA keeps motion smooth
+    # 【半径平滑】对半径变化做自适应平滑，抑制抖动和突变，提升显示稳定性。
+    # 参数：
+    #   curr_r —— 当前帧估算半径
+    #   prev_r —— 上一帧半径
+    # 返回：
+    #   平滑后的半径
     if prev_r is None:
-        return curr_r
+        return curr_r  # 首帧直接返回
 
     diff = curr_r - prev_r
 
-    # Ignore tiny changes to prevent flicker.
+    # 1. 忽略微小变化，防止闪烁
     if -2 <= diff <= 2:
         return prev_r
 
-    # Adaptive step limit:
-    # grow faster when object comes near, shrink slower for stability.
+    # 2. 自适应步长限制：靠近时增长快，远离时收缩慢
     up_step = 8 if prev_r < 24 else 12
     down_step = 8 if prev_r >= 20 else 6
     if diff > up_step:
@@ -455,17 +535,23 @@ def smooth_ball_radius(curr_r, prev_r):
     return ((prev_r * 13) + (curr_r * 7)) // 20
 
 def fomo_post_process(model, inputs, outputs):
-    ob, oh, ow, oc = model.output_shape[0]
+    # 【FOMO输出后处理】将模型输出的检测框坐标还原到原图坐标系，便于后续可视化和分析。
+    # 参数：
+    #   model   —— FOMO模型对象
+    #   inputs  —— 输入图像及ROI信息
+    #   outputs —— 模型输出张量
+    # 返回：
+    #   l —— 按类别分组的检测框列表，每项为(x, y, w, h, score)
+    ob, oh, ow, oc = model.output_shape[0]  # 输出张量维度
 
-    x_scale = inputs[0].roi[2] / ow
-    y_scale = inputs[0].roi[3] / oh
+    x_scale = inputs[0].roi[2] / ow  # x方向缩放
+    y_scale = inputs[0].roi[3] / oh  # y方向缩放
+    scale = min(x_scale, y_scale)    # 保持比例
 
-    scale = min(x_scale, y_scale)
+    x_offset = ((inputs[0].roi[2] - (ow * scale)) / 2) + inputs[0].roi[0]  # x偏移
+    y_offset = ((inputs[0].roi[3] - (ow * scale)) / 2) + inputs[0].roi[1]  # y偏移
 
-    x_offset = ((inputs[0].roi[2] - (ow * scale)) / 2) + inputs[0].roi[0]
-    y_offset = ((inputs[0].roi[3] - (ow * scale)) / 2) + inputs[0].roi[1]
-
-    l = [[] for i in range(oc)]
+    l = [[] for i in range(oc)]  # 按类别分组
 
     for i in range(oc):
         img = image.Image(outputs[0][0, :, :, i] * 255)
@@ -478,6 +564,7 @@ def fomo_post_process(model, inputs, outputs):
             score = (
                 img.get_statistics(thresholds=threshold_list, roi=rect).l_mean() / 255.0
             )
+            # 坐标还原到原图
             x = int((x * scale) + x_offset)
             y = int((y * scale) + y_offset)
             w = int(w * scale)
@@ -493,7 +580,13 @@ GRID_COLOR = (128, 128, 128)
 TEXT_COLOR = (255, 255, 0)
 
 def draw_dashed_line(img, x0, y0, x1, y1, color, dash_len=8, gap_len=6):
-    # 只支持水平或垂直线
+    # 【虚线绘制】仅支持水平或垂直虚线，用于网格线美化。
+    # 参数：
+    #   img —— 当前帧图像
+    #   x0, y0, x1, y1 —— 起止坐标
+    #   color —— 线条颜色
+    #   dash_len —— 虚线段长度
+    #   gap_len  —— 虚线间隔长度
     if x0 == x1:
         # 垂直线
         y = y0
@@ -510,6 +603,11 @@ def draw_dashed_line(img, x0, y0, x1, y1, color, dash_len=8, gap_len=6):
             x = x_end + gap_len
 
 def draw_grid(img, rows, cols, color):
+    # 【网格绘制】在图像上绘制rows×cols的虚线网格，用于辅助定位。
+    # 参数：
+    #   img —— 当前帧图像
+    #   rows, cols —— 网格行列数
+    #   color —— 网格线颜色
     w = img.width()
     h = img.height()
     # 竖线
@@ -522,6 +620,13 @@ def draw_grid(img, rows, cols, color):
         draw_dashed_line(img, 0, y, w, y, color)
 
 def get_grid_position(x, y, img_w, img_h, rows, cols):
+    # 【网格坐标换算】将像素坐标(x, y)映射到网格(row, col)编号。
+    # 参数：
+    #   x, y —— 像素坐标
+    #   img_w, img_h —— 图像宽高
+    #   rows, cols —— 网格行列数
+    # 返回：
+    #   row, col —— 网格行列编号（从0开始）
     col = min(cols - 1, max(0, (x * cols) // img_w))
     row = min(rows - 1, max(0, (y * rows) // img_h))
     return row, col
@@ -532,14 +637,18 @@ SENSOR_WIDTH_MM = 4.896  # OpenMV H7 Plus OV5640传感器宽度（mm）
 IMAGE_WIDTH = 240  # 你的windowing宽度
 
 def estimate_distance(pixel_diameter, sensor_width=SENSOR_WIDTH_MM, image_width=IMAGE_WIDTH):
-    # pixel_diameter: 检测到的像素直径
-    # sensor_width: 传感器宽度（mm）
-    # image_width: 图像宽度（像素）
-    mm_per_pixel = sensor_width / image_width
-    h_mm = pixel_diameter * mm_per_pixel
+    # 【距离估算】根据成像原理，利用像素直径反推网球到摄像头的距离。
+    # 参数：
+    #   pixel_diameter —— 检测到的网球像素直径
+    #   sensor_width   —— 传感器宽度（mm）
+    #   image_width    —— 图像宽度（像素）
+    # 返回：
+    #   D —— 估算距离（mm），若输入异常返回-1
+    mm_per_pixel = sensor_width / image_width  # 单像素对应的实际长度
+    h_mm = pixel_diameter * mm_per_pixel       # 网球在传感器上的实际成像长度
     if h_mm == 0:
-        return -1
-    D = (FOCAL_LENGTH_MM * TENNIS_DIAMETER_MM) / h_mm
+        return -1  # 防止除零
+    D = (FOCAL_LENGTH_MM * TENNIS_DIAMETER_MM) / h_mm  # 成像公式
     return D  # 单位：mm
 
 while(True):
