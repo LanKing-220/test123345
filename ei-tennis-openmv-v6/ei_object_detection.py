@@ -1,3 +1,6 @@
+# --- 网球半径历史平滑缓存 ---
+BALL_RADIUS_HISTORY_LEN = 10
+ball_radius_history = []
 # 分段经验修正的网球距离校正函数
 def correct_tennis_distance(distance_cm, radius):
     """
@@ -583,6 +586,18 @@ while(True):
             if ("tennis" in label_l) and ("racket" not in label_l) and ("player" not in label_l):
                 detected_diameter, cue_conf = estimate_tennis_diameter(img, x, y, w, h)
                 radius = fuse_tennis_radius(w, h, detected_diameter)
+                # 半径历史平滑：每10帧去极值后取均值
+                ball_radius_history.append(radius)
+                if len(ball_radius_history) > BALL_RADIUS_HISTORY_LEN:
+                    ball_radius_history.pop(0)
+                smooth_radius = radius
+                if len(ball_radius_history) == BALL_RADIUS_HISTORY_LEN:
+                    sorted_r = sorted(ball_radius_history)
+                    trimmed = sorted_r[1:-1]  # 去掉最大最小
+                    if trimmed:
+                        smooth_radius = int(sum(trimmed) / len(trimmed))
+                else:
+                    smooth_radius = int(sum(ball_radius_history) / len(ball_radius_history))
 
                 # 距离估算
                 distance_mm = estimate_distance(detected_diameter)
@@ -605,8 +620,8 @@ while(True):
                 assist_cx = center_x
                 assist_cy = center_y
 
-                # 直接用最新的radius画圈，保证与输出一致
-                img.draw_circle((assist_cx, assist_cy, radius), color=GREEN)
+                # 用平滑后的半径画圈，保证显示更稳定
+                img.draw_circle((assist_cx, assist_cy, smooth_radius), color=GREEN)
 
                 # 仍然保留轨迹管理和半径平滑用于后续跟踪，但不影响当前圈的显示
                 tid = match_tennis_track(assist_cx, assist_cy, used_track_ids, max(w, h))
@@ -642,6 +657,8 @@ while(True):
                 # 显示网格位置信息和距离
                 img.draw_string(assist_cx + 5, assist_cy - 10, pos_text, color=TEXT_COLOR, mono_space=False)
                 img.draw_string(assist_cx + 5, assist_cy + 10, dist_text, color=TEXT_COLOR, mono_space=False)
+                # 输出也用平滑后的半径
+                info['radius'] = smooth_radius
                 output_info.append(info)
             elif ("player" in label_l):
                 # Tennis player: 用蓝色固定大小圆圈标记
