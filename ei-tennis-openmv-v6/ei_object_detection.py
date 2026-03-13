@@ -546,9 +546,9 @@ while(True):
     clock.tick()
 
     img = sensor.snapshot()
-    used_track_ids = []
-    # 画网格线
+    # 先画网格线，保证任何情况下都显示
     draw_grid(img, GRID_ROWS, GRID_COLS, GRID_COLOR)
+    used_track_ids = []
 
     output_info = []
     tennis_id_counter = 1  # Tennis球id递增
