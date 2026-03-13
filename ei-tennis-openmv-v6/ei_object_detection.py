@@ -1,3 +1,19 @@
+# 分段经验修正的网球距离校正函数
+def correct_tennis_distance(distance_cm, radius):
+    """
+    对distance_cm进行分段经验修正，radius为像素半径。
+    """
+    if radius >= 50:
+        factor = 1.10
+    if radius >= 42:
+        factor = 1.15
+    elif radius >= 36:
+        factor = 1.20
+    elif radius >= 30:
+        factor = 1.25
+    else:
+        factor = 1.25
+    return distance_cm * factor
 # Edge Impulse - OpenMV FOMO Object Detection Example
 #
 # This work is licensed under the MIT license.
@@ -534,6 +550,7 @@ while(True):
     draw_grid(img, GRID_ROWS, GRID_COLS, GRID_COLOR)
 
     output_info = []
+    tennis_id_counter = 1  # Tennis球id递增
     for i, detection_list in enumerate(net.predict([img], callback=fomo_post_process)):
         # 动态调整各类别置信度
         if i == 1:
@@ -557,9 +574,14 @@ while(True):
             pos_text = f"Grid: ({row},{col})"
             info = {}
             info['kind'] = labels[i]
-            info['id'] = f"{i:02d}"
+            label_l = labels[i].lower()  # 修复未定义
+            # 对Tennis球id递增编号，其它类别保持原样
+            if ("tennis" in label_l) and ("racket" not in label_l) and ("player" not in label_l):
+                info['id'] = f"{tennis_id_counter:02d}"
+                tennis_id_counter += 1
+            else:
+                info['id'] = f"{i:02d}"
 
-            label_l = labels[i].lower()
             if ("tennis" in label_l) and ("racket" not in label_l) and ("player" not in label_l):
                 detected_diameter, cue_conf = estimate_tennis_diameter(img, x, y, w, h)
                 radius = fuse_tennis_radius(w, h, detected_diameter)
@@ -567,7 +589,9 @@ while(True):
                 # 距离估算
                 distance_mm = estimate_distance(detected_diameter)
                 if distance_mm > 0:
-                    distance_cm = (distance_mm / 10) * 2  # 距离结果乘以2
+                    distance_cm = (distance_mm / 10) * 2.15
+                    # 分段经验修正
+                    distance_cm = correct_tennis_distance(distance_cm, radius)
                     dist_text = "Dist: %.1fcm" % distance_cm
                     pos_cm = f"({center_x},{center_y})"
                     info['pos_cm'] = pos_cm
@@ -653,5 +677,7 @@ while(True):
 
     age_and_prune_tracks(used_track_ids)
 
-    print(output_info)
-    print(clock.fps(), "fps", end="\n\n")
+    # 美化输出：每个目标一行
+    for obj in output_info:
+        print(obj)
+    print(f"{clock.fps():.5f} fps\n")
