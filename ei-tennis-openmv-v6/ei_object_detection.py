@@ -37,7 +37,12 @@ colors = [ # Add more colors if you are detecting more than 7 types of classes a
     (255, 255, 255),
 ]
 
-threshold_list = [(math.ceil(min_confidence * 255), 255)]
+
+# 各类别置信度阈值
+THRESH_TENNIS = 0.5
+THRESH_PLAYER = 0.4
+THRESH_RACKET = 0.7
+threshold_list = [(math.ceil(THRESH_TENNIS * 255), 255)]
 GREEN = (0, 255, 0)
 RED = (255, 0, 0)
 tennis_tracks = {}
@@ -464,13 +469,82 @@ def fomo_post_process(model, inputs, outputs):
     return l
 
 clock = time.clock()
+
+GRID_ROWS = 12  # 可根据需要调整精度
+GRID_COLS = 12
+GRID_COLOR = (128, 128, 128)
+TEXT_COLOR = (255, 255, 0)
+
+def draw_dashed_line(img, x0, y0, x1, y1, color, dash_len=8, gap_len=6):
+    # 只支持水平或垂直线
+    if x0 == x1:
+        # 垂直线
+        y = y0
+        while y < y1:
+            y_end = min(y + dash_len, y1)
+            img.draw_line((x0, y, x1, y_end), color=color)
+            y = y_end + gap_len
+    elif y0 == y1:
+        # 水平线
+        x = x0
+        while x < x1:
+            x_end = min(x + dash_len, x1)
+            img.draw_line((x, y0, x_end, y1), color=color)
+            x = x_end + gap_len
+
+def draw_grid(img, rows, cols, color):
+    w = img.width()
+    h = img.height()
+    # 竖线
+    for i in range(1, cols):
+        x = (w * i) // cols
+        draw_dashed_line(img, x, 0, x, h, color)
+    # 横线
+    for j in range(1, rows):
+        y = (h * j) // rows
+        draw_dashed_line(img, 0, y, w, y, color)
+
+def get_grid_position(x, y, img_w, img_h, rows, cols):
+    col = min(cols - 1, max(0, (x * cols) // img_w))
+    row = min(rows - 1, max(0, (y * rows) // img_h))
+    return row, col
+
+FOCAL_LENGTH_MM = 2.8  # OpenMV H7 Plus镜头典型焦距（可查具体镜头参数）
+TENNIS_DIAMETER_MM = 67  # 标准网球直径
+SENSOR_WIDTH_MM = 4.896  # OpenMV H7 Plus OV5640传感器宽度（mm）
+IMAGE_WIDTH = 240  # 你的windowing宽度
+
+def estimate_distance(pixel_diameter, sensor_width=SENSOR_WIDTH_MM, image_width=IMAGE_WIDTH):
+    # pixel_diameter: 检测到的像素直径
+    # sensor_width: 传感器宽度（mm）
+    # image_width: 图像宽度（像素）
+    mm_per_pixel = sensor_width / image_width
+    h_mm = pixel_diameter * mm_per_pixel
+    if h_mm == 0:
+        return -1
+    D = (FOCAL_LENGTH_MM * TENNIS_DIAMETER_MM) / h_mm
+    return D  # 单位：mm
+
 while(True):
     clock.tick()
 
     img = sensor.snapshot()
     used_track_ids = []
+    # 画网格线
+    draw_grid(img, GRID_ROWS, GRID_COLS, GRID_COLOR)
 
+    output_info = []
     for i, detection_list in enumerate(net.predict([img], callback=fomo_post_process)):
+        # 动态调整各类别置信度
+        if i == 1:
+            conf_th = THRESH_TENNIS
+        elif i == 2:
+            conf_th = THRESH_PLAYER
+        elif i == 3:
+            conf_th = THRESH_RACKET
+        else:
+            conf_th = 0.5
+        detection_list = [d for d in detection_list if d[4] >= conf_th]
         if i == 0: continue  # background class
         if len(detection_list) == 0: continue  # no detections for this class?
 
@@ -478,17 +552,41 @@ while(True):
         for x, y, w, h, score in detection_list:
             center_x = math.floor(x + (w / 2))
             center_y = math.floor(y + (h / 2))
-            print(f"x {center_x}\ty {center_y}\tscore {score}")
+            # 计算球的网格位置
+            row, col = get_grid_position(center_x, center_y, img.width(), img.height(), GRID_ROWS, GRID_COLS)
+            pos_text = f"Grid: ({row},{col})"
+            info = {}
+            info['kind'] = labels[i]
+            info['id'] = f"{i:02d}"
 
             label_l = labels[i].lower()
-            if ("tennis" in label_l) and ("racket" not in label_l):
+            if ("tennis" in label_l) and ("racket" not in label_l) and ("player" not in label_l):
                 detected_diameter, cue_conf = estimate_tennis_diameter(img, x, y, w, h)
                 radius = fuse_tennis_radius(w, h, detected_diameter)
+
+                # 距离估算
+                distance_mm = estimate_distance(detected_diameter)
+                if distance_mm > 0:
+                    distance_cm = (distance_mm / 10) * 2  # 距离结果乘以2
+                    dist_text = "Dist: %.1fcm" % distance_cm
+                    pos_cm = f"({center_x},{center_y})"
+                    info['pos_cm'] = pos_cm
+                    info['distance_cm'] = round(distance_cm, 1)
+                else:
+                    dist_text = "Dist: -"
+                    info['pos_cm'] = 0
+                    info['distance_cm'] = 0
+                info['radius'] = radius
+                info['g_id'] = f"({row},{col})"
 
                 # FOMO is the only source for tennis recognition and center.
                 assist_cx = center_x
                 assist_cy = center_y
 
+                # 直接用最新的radius画圈，保证与输出一致
+                img.draw_circle((assist_cx, assist_cy, radius), color=GREEN)
+
+                # 仍然保留轨迹管理和半径平滑用于后续跟踪，但不影响当前圈的显示
                 tid = match_tennis_track(assist_cx, assist_cy, used_track_ids, max(w, h))
                 if tid is None:
                     tid = next_track_id
@@ -519,13 +617,41 @@ while(True):
 
                 tennis_tracks[tid] = (assist_cx, assist_cy, smooth_radius, 0, lock_count)
                 used_track_ids.append(tid)
-                img.draw_circle((assist_cx, assist_cy, smooth_radius), color=GREEN)
+                # 显示网格位置信息和距离
+                img.draw_string(assist_cx + 5, assist_cy - 10, pos_text, color=TEXT_COLOR, mono_space=False)
+                img.draw_string(assist_cx + 5, assist_cy + 10, dist_text, color=TEXT_COLOR, mono_space=False)
+                output_info.append(info)
+            elif ("player" in label_l):
+                # Tennis player: 用蓝色固定大小圆圈标记
+                fixed_radius = 20  # 可根据实际调整
+                BLUE = (0, 0, 255)
+                img.draw_circle((center_x, center_y, fixed_radius), color=BLUE)
+                # 显示网格位置信息
+                img.draw_string(center_x + 5, center_y - 10, pos_text, color=TEXT_COLOR, mono_space=False)
+                info['radius'] = fixed_radius
+                info['pos_cm'] = 0
+                info['distance_cm'] = 0
+                info['g_id'] = f"({row},{col})"
+                output_info.append(info)
             elif "racket" in label_l:
                 img.draw_rectangle((x, y, w, h), color=RED)
+                info['radius'] = 0
+                info['pos_cm'] = 0
+                info['distance_cm'] = 0
+                info['g_id'] = f"({row},{col})"
+                output_info.append(info)
             else:
                 radius = 12
                 img.draw_circle((center_x, center_y, radius), color=colors[i])
+                # 显示网格位置信息
+                img.draw_string(center_x + 5, center_y - 10, pos_text, color=TEXT_COLOR, mono_space=False)
+                info['radius'] = radius
+                info['pos_cm'] = 0
+                info['distance_cm'] = 0
+                info['g_id'] = f"({row},{col})"
+                output_info.append(info)
 
     age_and_prune_tracks(used_track_ids)
 
+    print(output_info)
     print(clock.fps(), "fps", end="\n\n")
