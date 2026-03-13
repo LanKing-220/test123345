@@ -9,8 +9,6 @@ def correct_tennis_distance(distance_cm, radius):
         factor = 1.15
     elif radius >= 36:
         factor = 1.20
-    elif radius >= 30:
-        factor = 1.25
     else:
         factor = 1.25
     return distance_cm * factor
