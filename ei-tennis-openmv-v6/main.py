@@ -36,8 +36,8 @@ pan_angle = 90.0   # 水平舵机初始角度
 tilt_angle = 130.0  # 垂直舵机初始角度
 
 # 舵机极限角度
-pan_angle_limit = [30.0, 150.0]
-tilt_angle_limit = [30.0, 150.0]
+pan_angle_limit = [-180.0, 180.0]
+tilt_angle_limit = [90.0, 150.0]
 
 # PWM定时器初始化
 
