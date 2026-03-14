@@ -21,13 +21,106 @@ def correct_tennis_distance(distance_cm, radius):
 
 
 import sensor, image, time, ml, math, uos, gc
+import display
+from pyb import Pin, Timer
+
+# 舵机引脚定义
+p1 = Pin('P1', Pin.OUT_PP)   # 水平舵机
+p9 = Pin('P9', Pin.OUT_PP)   # 垂直舵机
+# 舵机引脚定义（可根据实际硬件调整）
+pan_servo = Pin('P1', Pin.OUT_PP)   # 水平舵机
+tilt_servo = Pin('P9', Pin.OUT_PP)  # 垂直舵机
+
+# 舵机角度变量
+pan_angle = 90.0   # 水平舵机初始角度
+tilt_angle = 130.0  # 垂直舵机初始角度
+
+# 舵机极限角度
+pan_angle_limit = [30.0, 150.0]
+tilt_angle_limit = [30.0, 150.0]
+
+# PWM定时器初始化
+
+# P1引脚PWM控制底盘舵机定时器初始化配置
+p1_tim_pluse = Timer(12)
+p1_tim_main = Timer(13, freq=50)
+
+def P1_ISR0(t):
+    p1.low()
+    p1_tim_pluse.deinit()
+
+def P1_ISR(t):
+    psr = int(pan_angle*1000/9+5000) - 1
+    p1.high()
+    p1_tim_pluse.init(prescaler=psr, period=23)
+    p1_tim_pluse.callback(P1_ISR0)
+
+p1_tim_main.callback(P1_ISR)
+#===========================================================
+
+# P9引脚PWM控制底盘舵机定时器初始化配置
+p9_tim_pluse = Timer(14)
+p9_tim_main = Timer(15, freq=50)
+
+def P9_ISR0(t):
+    p9.low()
+    p9_tim_pluse.deinit()
+
+def P9_ISR(t):
+    psr = int(tilt_angle*1000/9+5000) - 1
+    p9.high()
+    p9_tim_pluse.init(prescaler=psr, period=23)
+    p9_tim_pluse.callback(P9_ISR0)
+
+p9_tim_main.callback(P9_ISR)
+#===========================================================
+
+
+# 开机垂直复位：将舵机调整到垂直位置
+# 舵机缓慢转动到目标角度
+
+# 舵机缓慢转动到目标角度（每步1°，每步延时0.2秒，慢速）
+def motor_smooth_move(target_pan, target_tilt, step=1, delay=0.2):
+    """
+    舵机缓慢转动到目标角度
+    输入参数：
+        target_pan  —— 水平舵机目标角度（单位：度，范围30~150）
+        target_tilt —— 垂直舵机目标角度（单位：度，范围30~150）
+        step        —— 每次转动的步进角度（单位：度，默认1）
+        delay       —— 每步转动后的延时（单位：秒，默认0.2，决定转动速度）
+    功能：
+        以指定步进和延时，将舵机从当前角度缓慢转动到目标角度。
+    """
+    global pan_angle, tilt_angle
+    target_pan = max(pan_angle_limit[0], min(target_pan, pan_angle_limit[1]))
+    target_tilt = max(tilt_angle_limit[0], min(target_tilt, tilt_angle_limit[1]))
+    while abs(pan_angle - target_pan) > 0.5:
+        if pan_angle < target_pan:
+            pan_angle += step
+        else:
+            pan_angle -= step
+        pan_angle = max(pan_angle_limit[0], min(pan_angle, pan_angle_limit[1]))
+        time.sleep(delay)
+    pan_angle = target_pan
+    while abs(tilt_angle - target_tilt) > 0.5:
+        if tilt_angle < target_tilt:
+            tilt_angle += step
+        else:
+            tilt_angle -= step
+        tilt_angle = max(tilt_angle_limit[0], min(tilt_angle, tilt_angle_limit[1]))
+        time.sleep(delay)
+    tilt_angle = target_tilt
+
+# 开机自动缓慢复位到垂直
+motor_smooth_move(90.0, 130.0, step=1, delay=0.2)
+
 
 sensor.reset()                         # 复位并初始化摄像头
 sensor.set_pixformat(sensor.RGB565)    # 设置像素格式为RGB565（或灰度）
-sensor.set_framesize(sensor.QVGA)      # 设置分辨率为QVGA（320x240）
-sensor.set_windowing((240, 240))       # 设置窗口为240x240
+sensor.set_framesize(sensor.QVGA)      # 设置分辨率为QVGA（240x320）
 sensor.skip_frames(time=2000)          # 等待摄像头自动调整
 
+lcd = display.SPIDisplay(width=240,height=320)
 net = None
 labels = None
 min_confidence = 0.5
@@ -574,8 +667,8 @@ def fomo_post_process(model, inputs, outputs):
 
 clock = time.clock()
 
-GRID_ROWS = 12  # 可根据需要调整精度
-GRID_COLS = 12
+GRID_ROWS = 9  # 网格行数
+GRID_COLS = 12  # 网格列数
 GRID_COLOR = (128, 128, 128)
 TEXT_COLOR = (255, 255, 0)
 
@@ -634,7 +727,7 @@ def get_grid_position(x, y, img_w, img_h, rows, cols):
 FOCAL_LENGTH_MM = 2.8  # OpenMV H7 Plus镜头典型焦距（可查具体镜头参数）
 TENNIS_DIAMETER_MM = 67  # 标准网球直径
 SENSOR_WIDTH_MM = 4.896  # OpenMV H7 Plus OV5640传感器宽度（mm）
-IMAGE_WIDTH = 240  # 你的windowing宽度
+IMAGE_WIDTH = 320  # 你的windowing宽度
 
 def estimate_distance(pixel_diameter, sensor_width=SENSOR_WIDTH_MM, image_width=IMAGE_WIDTH):
     # 【距离估算】根据成像原理，利用像素直径反推网球到摄像头的距离。
@@ -730,7 +823,11 @@ while(True):
                 assist_cy = center_y
 
                 # 用平滑后的半径画圈，保证显示更稳定
-                img.draw_circle((assist_cx, assist_cy, smooth_radius), color=GREEN)
+                # 限制圆心和半径，防止超出边界
+                safe_cx = clamp(assist_cx, smooth_radius, img.width() - smooth_radius)
+                safe_cy = clamp(assist_cy, smooth_radius, img.height() - smooth_radius)
+                safe_radius = clamp(smooth_radius, 4, min(safe_cx, img.width()-safe_cx, safe_cy, img.height()-safe_cy))
+                img.draw_circle((safe_cx, safe_cy, safe_radius), color=GREEN)
 
                 # 仍然保留轨迹管理和半径平滑用于后续跟踪，但不影响当前圈的显示
                 tid = match_tennis_track(assist_cx, assist_cy, used_track_ids, max(w, h))
@@ -764,8 +861,13 @@ while(True):
                 tennis_tracks[tid] = (assist_cx, assist_cy, smooth_radius, 0, lock_count)
                 used_track_ids.append(tid)
                 # 显示网格位置信息和距离
-                img.draw_string(assist_cx + 5, assist_cy - 10, pos_text, color=TEXT_COLOR, mono_space=False)
-                img.draw_string(assist_cx + 5, assist_cy + 10, dist_text, color=TEXT_COLOR, mono_space=False)
+                # 限制文字显示坐标，防止超出边界
+                text_x1 = clamp(safe_cx + 5, 0, img.width() - 1)
+                text_y1 = clamp(safe_cy - 10, 0, img.height() - 1)
+                text_x2 = clamp(safe_cx + 5, 0, img.width() - 1)
+                text_y2 = clamp(safe_cy + 10, 0, img.height() - 1)
+                img.draw_string(text_x1, text_y1, pos_text, color=TEXT_COLOR, mono_space=False)
+                img.draw_string(text_x2, text_y2, dist_text, color=TEXT_COLOR, mono_space=False)
                 # 输出也用平滑后的半径
                 info['radius'] = smooth_radius
                 output_info.append(info)
@@ -773,9 +875,15 @@ while(True):
                 # Tennis player: 用蓝色固定大小圆圈标记
                 fixed_radius = 20  # 可根据实际调整
                 BLUE = (0, 0, 255)
-                img.draw_circle((center_x, center_y, fixed_radius), color=BLUE)
-                # 显示网格位置信息
-                img.draw_string(center_x + 5, center_y - 10, pos_text, color=TEXT_COLOR, mono_space=False)
+                # 限制圆心和半径，防止超出边界
+                safe_cx = clamp(center_x, fixed_radius, img.width() - fixed_radius)
+                safe_cy = clamp(center_y, fixed_radius, img.height() - fixed_radius)
+                safe_radius = clamp(fixed_radius, 4, min(safe_cx, img.width()-safe_cx, safe_cy, img.height()-safe_cy))
+                img.draw_circle((safe_cx, safe_cy, safe_radius), color=BLUE)
+                # 限制文字显示坐标，防止超出边界
+                text_x1 = clamp(safe_cx + 5, 0, img.width() - 1)
+                text_y1 = clamp(safe_cy - 10, 0, img.height() - 1)
+                img.draw_string(text_x1, text_y1, pos_text, color=TEXT_COLOR, mono_space=False)
                 info['radius'] = fixed_radius
                 info['pos_cm'] = 0
                 info['distance_cm'] = 0
@@ -790,9 +898,15 @@ while(True):
                 output_info.append(info)
             else:
                 radius = 12
-                img.draw_circle((center_x, center_y, radius), color=colors[i])
-                # 显示网格位置信息
-                img.draw_string(center_x + 5, center_y - 10, pos_text, color=TEXT_COLOR, mono_space=False)
+                # 限制圆心和半径，防止超出边界
+                safe_cx = clamp(center_x, radius, img.width() - radius)
+                safe_cy = clamp(center_y, radius, img.height() - radius)
+                safe_radius = clamp(radius, 4, min(safe_cx, img.width()-safe_cx, safe_cy, img.height()-safe_cy))
+                img.draw_circle((safe_cx, safe_cy, safe_radius), color=colors[i])
+                # 限制文字显示坐标，防止超出边界
+                text_x1 = clamp(safe_cx + 5, 0, img.width() - 1)
+                text_y1 = clamp(safe_cy - 10, 0, img.height() - 1)
+                img.draw_string(text_x1, text_y1, pos_text, color=TEXT_COLOR, mono_space=False)
                 info['radius'] = radius
                 info['pos_cm'] = 0
                 info['distance_cm'] = 0
@@ -805,3 +919,4 @@ while(True):
     for obj in output_info:
         print(obj)
     print(f"{clock.fps():.5f} fps\n")
+    lcd.write(img, hint=image.ROTATE_270)  # Take a picture and display the image.
