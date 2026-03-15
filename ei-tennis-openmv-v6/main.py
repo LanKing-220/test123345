@@ -946,7 +946,7 @@ while(True):
 
     age_and_prune_tracks(used_track_ids)
 
-    # ==================== 新增：状态机与舵机控制 ====================
+    # ==================== 状态机与舵机控制 ====================
     # 先确定当前要跟踪的目标中心（如果有）
     target_cx = None
     target_cy = None
@@ -968,9 +968,6 @@ while(True):
                     pick_substate = PICK_TRACK
                     best_scan_tennis = None  # 清空
                     print("[PICK] 锁定网球 ID:", locked_tennis_id)
-                else:
-                    # 没有检测到网球，继续扫描
-                    pass
             elif pan_angle <= pan_angle_limit[0]:
                 pan_angle = pan_angle_limit[0]
                 scan_direction = 1
@@ -985,7 +982,19 @@ while(True):
                 if best_scan_tennis is None or det['distance'] < best_scan_tennis['distance']:
                     best_scan_tennis = det
 
-            # 如果有锁定网球，则跟踪它，否则不更新舵机（由扫描控制）
+            # ====== 垂直舵机追踪（追踪当前帧最近的网球）======
+            if tennis_detections:
+                # 找到当前帧中距离最近的网球
+                nearest_tennis = min(tennis_detections, key=lambda det: det['distance'])
+                ref_cx, ref_cy = nearest_tennis['cx'], nearest_tennis['cy']
+                # 计算垂直误差（图像中心Y坐标）
+                tilt_error = ref_cy - img.height() / 2
+                tilt_output = tilt_pid.get_pid(tilt_error, 1)
+                tilt_angle += tilt_output
+                tilt_angle = clamp(tilt_angle, tilt_angle_limit[0], tilt_angle_limit[1])
+            # =============================================
+
+            # 如果有锁定网球，则跟踪它，否则不更新水平舵机（由扫描控制）
             if locked_tennis_id is not None:
                 # 如果锁定ID还在跟踪中，则进入TRACK状态
                 if locked_tennis_id in tennis_tracks:
