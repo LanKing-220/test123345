@@ -81,29 +81,36 @@ while True:
     img = sensor.snapshot()
     blobs = img.find_blobs([red_threshold])
     if blobs:
-        max_blob = find_max(blobs)
-        pan_error = max_blob.cx()-img.width()/2
-        tilt_error = max_blob.cy()-img.height()/2
+            # 1. 获取最大色块（目标球）
+            max_blob = find_max(blobs)
+            # 2. 计算舵机误差：球中心与图像中心的偏差
+            pan_error = max_blob.cx()-img.width()/2
+            tilt_error = max_blob.cy()-img.height()/2
 
-        print("pan_error: ", pan_error)
+            print("pan_error: ", pan_error)
 
-        img.draw_rectangle(max_blob.rect()) # rect
-        img.draw_cross(max_blob.cx(), max_blob.cy()) # cx, cy
+            # 3. 绘制目标球的矩形和十字中心
+            img.draw_rectangle(max_blob.rect()) # rect
+            img.draw_cross(max_blob.cx(), max_blob.cy()) # cx, cy
 
-        pan_output=pan_pid.get_pid(pan_error,1)/2
-        tilt_output=tilt_pid.get_pid(tilt_error,1)
-        print("pan_output",pan_output)
-        pan_angle-=pan_output
-        tilt_angle+=tilt_output
-        #角度限制
-        if pan_angle < pan_angle_limit[0]:
-            pan_angle = pan_angle_limit[0]
-        elif pan_angle > pan_angle_limit[1]:
-            pan_angle = pan_angle_limit[1]
-        if tilt_angle < tilt_angle_limit[0]:
-            tilt_angle = tilt_angle_limit[0]
-        elif tilt_angle > tilt_angle_limit[1]:
-            tilt_angle = tilt_angle_limit[1]
+            # 4. PID控制器计算舵机输出
+            pan_output=pan_pid.get_pid(pan_error,1)/2
+            tilt_output=tilt_pid.get_pid(tilt_error,1)
+            print("pan_output",pan_output)
+
+            # 5. 更新舵机角度（底盘水平/俯仰）
+            pan_angle-=pan_output
+            tilt_angle+=tilt_output
+
+            # 6. 舵机角度限制，防止越界
+            if pan_angle < pan_angle_limit[0]:
+                pan_angle = pan_angle_limit[0]
+            elif pan_angle > pan_angle_limit[1]:
+                pan_angle = pan_angle_limit[1]
+            if tilt_angle < tilt_angle_limit[0]:
+                tilt_angle = tilt_angle_limit[0]
+            elif tilt_angle > tilt_angle_limit[1]:
+                tilt_angle = tilt_angle_limit[1]
 
 
     lcd.write(img, hint=image.ROTATE_270)  # Take a picture and display the image.

@@ -36,8 +36,8 @@ pan_angle = 90.0   # 水平舵机初始角度
 tilt_angle = 130.0  # 垂直舵机初始角度
 
 # 舵机极限角度
-pan_angle_limit = [-180.0, 180.0]
-tilt_angle_limit = [90.0, 150.0]
+pan_angle_limit = [-1800.0, 180.0]
+tilt_angle_limit = [80.0, 150.0]
 
 # PWM定时器初始化
 
@@ -74,46 +74,6 @@ def P9_ISR(t):
 
 p9_tim_main.callback(P9_ISR)
 #===========================================================
-
-
-# 开机垂直复位：将舵机调整到垂直位置
-# 舵机缓慢转动到目标角度
-
-# 舵机缓慢转动到目标角度（每步1°，每步延时0.2秒，慢速）
-def motor_smooth_move(target_pan, target_tilt, step=1, delay=0.2):
-    """
-    舵机缓慢转动到目标角度
-    输入参数：
-        target_pan  —— 水平舵机目标角度（单位：度，范围30~150）
-        target_tilt —— 垂直舵机目标角度（单位：度，范围30~150）
-        step        —— 每次转动的步进角度（单位：度，默认1）
-        delay       —— 每步转动后的延时（单位：秒，默认0.2，决定转动速度）
-    功能：
-        以指定步进和延时，将舵机从当前角度缓慢转动到目标角度。
-    """
-    global pan_angle, tilt_angle
-    target_pan = max(pan_angle_limit[0], min(target_pan, pan_angle_limit[1]))
-    target_tilt = max(tilt_angle_limit[0], min(target_tilt, tilt_angle_limit[1]))
-    while abs(pan_angle - target_pan) > 0.5:
-        if pan_angle < target_pan:
-            pan_angle += step
-        else:
-            pan_angle -= step
-        pan_angle = max(pan_angle_limit[0], min(pan_angle, pan_angle_limit[1]))
-        time.sleep(delay)
-    pan_angle = target_pan
-    while abs(tilt_angle - target_tilt) > 0.5:
-        if tilt_angle < target_tilt:
-            tilt_angle += step
-        else:
-            tilt_angle -= step
-        tilt_angle = max(tilt_angle_limit[0], min(tilt_angle, tilt_angle_limit[1]))
-        time.sleep(delay)
-    tilt_angle = target_tilt
-
-# 开机自动缓慢复位到垂直
-motor_smooth_move(90.0, 130.0, step=1, delay=0.2)
-
 
 sensor.reset()                         # 复位并初始化摄像头
 sensor.set_pixformat(sensor.RGB565)    # 设置像素格式为RGB565（或灰度）
