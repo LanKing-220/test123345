@@ -23,6 +23,7 @@ def correct_tennis_distance(distance_cm, radius):
 import sensor, image, time, ml, math, uos, gc
 import display
 from pyb import Pin, Timer
+from pid import PID
 
 # 舵机引脚定义
 p1 = Pin('P1', Pin.OUT_PP)   # 水平舵机
@@ -704,6 +705,43 @@ def estimate_distance(pixel_diameter, sensor_width=SENSOR_WIDTH_MM, image_width=
     D = (FOCAL_LENGTH_MM * TENNIS_DIAMETER_MM) / h_mm  # 成像公式
     return D  # 单位：mm
 
+# ==================== 新增：状态机定义 ====================
+# 模式
+MODE_PICK = 0          # 捡球模式
+MODE_PLAY = 1          # 对打模式
+mode = MODE_PICK
+
+# 捡球模式子状态
+PICK_SCAN = 0          # 扫描
+PICK_TRACK = 1         # 跟踪锁定网球
+pick_substate = PICK_SCAN
+
+# 对打模式子状态
+PLAY_TRACK_PLAYER = 0  # 追踪人物
+PLAY_WAIT_SERVE = 1    # 等待发球（检测到球拍）
+play_substate = PLAY_TRACK_PLAYER
+
+# 控制标志
+capture_cmd = 0                # 捕获指令（捡球模式）
+player_locked = False          # 人物是否锁定
+balls_served = 0               # 已发球计数（模拟）
+target_balls = 5               # 假设需要发出5个球（可动态调整）
+locked_player_cx = 0            # 锁定人物的中心x（用于跟踪）
+locked_player_cy = 0            # 锁定人物的中心y
+locked_tennis_id = None         # 当前锁定的网球轨迹ID
+
+# 扫描相关
+scan_direction = 1              # 1: 增大角度， -1: 减小角度
+scan_speed = 2.0                 # 扫描速度（度/帧）
+scan_phase = 0                   # 扫描阶段（0:未完成，1:完成一次扫描）
+best_scan_tennis = None          # 扫描过程中发现的最佳网球（距离最小）
+# 格式: {'distance': dist, 'track_id': tid, 'cx':cx, 'cy':cy}
+
+# PID控制器（从简单示例中移植）
+pan_pid = PID(p=0.07, i=0, imax=90)   # 水平PID
+tilt_pid = PID(p=0.05, i=0, imax=90)  # 俯仰PID
+# =========================================================
+
 while(True):
     clock.tick()
 
@@ -714,6 +752,12 @@ while(True):
 
     output_info = []
     tennis_id_counter = 1  # Tennis球id递增
+
+    # 检测结果分类存储
+    tennis_detections = []   # 存放 (x,y,w,h,score,cx,cy,distance_cm,track_id) 用于后续处理
+    player_detections = []   # 存放 (x,y,w,h,score,cx,cy)
+    racket_detections = []   # 存放 (x,y,w,h,score,cx,cy)
+
     for i, detection_list in enumerate(net.predict([img], callback=fomo_post_process)):
         # 动态调整各类别置信度
         if i == 1:
@@ -831,6 +875,17 @@ while(True):
                 # 输出也用平滑后的半径
                 info['radius'] = smooth_radius
                 output_info.append(info)
+
+                # 存储网球检测信息供状态机使用
+                if distance_cm > 0:
+                    tennis_detections.append({
+                        'tid': tid,
+                        'cx': assist_cx,
+                        'cy': assist_cy,
+                        'distance': distance_cm,
+                        'x': x, 'y': y, 'w': w, 'h': h
+                    })
+
             elif ("player" in label_l):
                 # Tennis player: 用蓝色固定大小圆圈标记
                 fixed_radius = 20  # 可根据实际调整
@@ -849,6 +904,14 @@ while(True):
                 info['distance_cm'] = 0
                 info['g_id'] = f"({row},{col})"
                 output_info.append(info)
+
+                # 存储人物检测
+                player_detections.append({
+                    'cx': center_x,
+                    'cy': center_y,
+                    'x': x, 'y': y, 'w': w, 'h': h
+                })
+
             elif "racket" in label_l:
                 img.draw_rectangle((x, y, w, h), color=RED)
                 info['radius'] = 0
@@ -856,6 +919,14 @@ while(True):
                 info['distance_cm'] = 0
                 info['g_id'] = f"({row},{col})"
                 output_info.append(info)
+
+                # 存储球拍检测
+                racket_detections.append({
+                    'cx': center_x,
+                    'cy': center_y,
+                    'x': x, 'y': y, 'w': w, 'h': h
+                })
+
             else:
                 radius = 12
                 # 限制圆心和半径，防止超出边界
@@ -875,8 +946,176 @@ while(True):
 
     age_and_prune_tracks(used_track_ids)
 
-    # 美化输出：每个目标一行
+    # ==================== 新增：状态机与舵机控制 ====================
+    # 先确定当前要跟踪的目标中心（如果有）
+    target_cx = None
+    target_cy = None
+
+    if mode == MODE_PICK:
+        # 捡球模式
+        if pick_substate == PICK_SCAN:
+            # 扫描：水平舵机往复运动
+            pan_angle += scan_direction * scan_speed
+            if pan_angle >= pan_angle_limit[1]:
+                pan_angle = pan_angle_limit[1]
+                scan_direction = -1
+                # 完成一次扫描（从一端到另一端），可以认为扫描完成，准备选取最佳网球
+                # 但为了确保能看到各个方向，我们可以在每次到达边界时评估一次，或者设定扫描时间
+                # 简化：每次到达边界时，如果存在最佳候选，则锁定
+                if best_scan_tennis is not None:
+                    # 锁定该网球
+                    locked_tennis_id = best_scan_tennis['tid']
+                    pick_substate = PICK_TRACK
+                    best_scan_tennis = None  # 清空
+                    print("[PICK] 锁定网球 ID:", locked_tennis_id)
+                else:
+                    # 没有检测到网球，继续扫描
+                    pass
+            elif pan_angle <= pan_angle_limit[0]:
+                pan_angle = pan_angle_limit[0]
+                scan_direction = 1
+                if best_scan_tennis is not None:
+                    locked_tennis_id = best_scan_tennis['tid']
+                    pick_substate = PICK_TRACK
+                    best_scan_tennis = None
+                    print("[PICK] 锁定网球 ID:", locked_tennis_id)
+
+            # 在扫描过程中，记录检测到的网球，选择距离最小的
+            for det in tennis_detections:
+                if best_scan_tennis is None or det['distance'] < best_scan_tennis['distance']:
+                    best_scan_tennis = det
+
+            # 如果有锁定网球，则跟踪它，否则不更新舵机（由扫描控制）
+            if locked_tennis_id is not None:
+                # 如果锁定ID还在跟踪中，则进入TRACK状态
+                if locked_tennis_id in tennis_tracks:
+                    pick_substate = PICK_TRACK
+                else:
+                    # 锁定丢失，回到扫描
+                    locked_tennis_id = None
+                    pick_substate = PICK_SCAN
+                    best_scan_tennis = None
+
+        elif pick_substate == PICK_TRACK:
+            # 跟踪锁定网球
+            if locked_tennis_id is not None and locked_tennis_id in tennis_tracks:
+                # 获取锁定网球的当前信息
+                track = tennis_tracks[locked_tennis_id]
+                tx, ty, tr, miss, lock = track
+                # 检查距离是否≤10cm
+                # 我们需要找到该网球对应的距离信息（从当前帧的检测中匹配）
+                dist_cm = None
+                for det in tennis_detections:
+                    if det['tid'] == locked_tennis_id:
+                        dist_cm = det['distance']
+                        break
+                if dist_cm is not None and dist_cm <= 10.0:
+                    # 触发捕获指令
+                    capture_cmd = 1
+                    print("[PICK] 距离<=10cm，捕获指令=1")
+                    # 捕获完成后（这里假设立即完成）清除指令，解锁，回到扫描
+                    capture_cmd = 0
+                    locked_tennis_id = None
+                    pick_substate = PICK_SCAN
+                    best_scan_tennis = None
+                else:
+                    # 正常跟踪：设置目标中心为网球中心
+                    target_cx = tx
+                    target_cy = ty
+            else:
+                # 锁定丢失，回到扫描
+                locked_tennis_id = None
+                pick_substate = PICK_SCAN
+                best_scan_tennis = None
+
+    elif mode == MODE_PLAY:
+        # 对打模式
+        if play_substate == PLAY_TRACK_PLAYER:
+            # 追踪人物
+            if player_detections:
+                # 简单选取第一个（或最大）人物
+                # 这里选择面积最大的
+                max_area = 0
+                best_player = None
+                for p in player_detections:
+                    area = p['w'] * p['h']
+                    if area > max_area:
+                        max_area = area
+                        best_player = p
+                if best_player:
+                    target_cx = best_player['cx']
+                    target_cy = best_player['cy']
+                    player_locked = True
+                    # 检查是否出现球拍
+                    if racket_detections:
+                        print("[PLAY] 检测到球拍，进入等待发球状态")
+                        play_substate = PLAY_WAIT_SERVE
+                else:
+                    player_locked = False
+            else:
+                player_locked = False
+
+        elif play_substate == PLAY_WAIT_SERVE:
+            # 等待发球，同时继续追踪人物（不能追踪网球）
+            if player_detections:
+                # 仍然追踪人物
+                max_area = 0
+                best_player = None
+                for p in player_detections:
+                    area = p['w'] * p['h']
+                    if area > max_area:
+                        max_area = area
+                        best_player = p
+                if best_player:
+                    target_cx = best_player['cx']
+                    target_cy = best_player['cy']
+                    # 发球模拟：如果检测到球拍，认为一次发球完成
+                    if racket_detections:
+                        balls_served += 1
+                        print("[PLAY] 发球计数:", balls_served)
+                        if balls_served >= target_balls:
+                            # 发球完毕，解除锁定，回到捡球模式
+                            print("[PLAY] 发球完毕，返回捡球模式")
+                            mode = MODE_PICK
+                            pick_substate = PICK_SCAN
+                            player_locked = False
+                            balls_served = 0
+                            # 记录打出去的网球个数（这里用balls_served作为伪参考）
+                            # 可以存储到某个变量，但本次暂不实现
+                else:
+                    # 人物丢失，可能回到追踪状态
+                    play_substate = PLAY_TRACK_PLAYER
+            else:
+                # 人物丢失，回到追踪
+                play_substate = PLAY_TRACK_PLAYER
+
+    # 如果存在目标中心（target_cx, target_cy），计算误差并调整舵机
+    if target_cx is not None and target_cy is not None:
+        # 计算误差（图像中心为期望位置）
+        pan_error = target_cx - img.width() / 2
+        tilt_error = target_cy - img.height() / 2
+
+        # PID计算输出
+        pan_output = pan_pid.get_pid(pan_error, 1) / 2   # 比例因子可根据实际情况调整
+        tilt_output = tilt_pid.get_pid(tilt_error, 1)
+
+        # 更新舵机角度
+        pan_angle -= pan_output   # 根据正负方向可能需要调整符号
+        tilt_angle += tilt_output
+
+        # 限幅
+        pan_angle = clamp(pan_angle, pan_angle_limit[0], pan_angle_limit[1])
+        tilt_angle = clamp(tilt_angle, tilt_angle_limit[0], tilt_angle_limit[1])
+
+    # 可选：打印状态信息
+    print("Mode:", "PICK" if mode==MODE_PICK else "PLAY",
+          "Substate:", pick_substate if mode==MODE_PICK else play_substate,
+          "Pan:", pan_angle, "Tilt:", tilt_angle,
+          "Capture:", capture_cmd, "PlayerLocked:", player_locked)
+
+    # 原有输出信息
     for obj in output_info:
         print(obj)
     print(f"{clock.fps():.5f} fps\n")
+
     lcd.write(img, hint=image.ROTATE_270)  # Take a picture and display the image.
