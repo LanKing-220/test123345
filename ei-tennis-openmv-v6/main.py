@@ -1,4 +1,4 @@
-# --- 网球半径历史平滑缓存 ---
+﻿# --- 网球半径历史平滑缓存 ---
 BALL_RADIUS_HISTORY_LEN = 10
 ball_radius_history = []
 # 分段经验修正的网球距离校正函数
@@ -20,10 +20,17 @@ def correct_tennis_distance(distance_cm, radius):
 # 本代码用于网球场景的目标检测、距离估算与可视化，所有注释均为中文。
 
 
-import sensor, image, time, ml, math, uos, gc
+import sensor, image, time, ml, math, uos, gc, sys
 import display
 from pyb import Pin, Timer
 from pid import PID
+
+try:
+    from ml.postprocessing.edgeimpulse import Fomo as EdgeImpulseFomo
+except ImportError:
+    EdgeImpulseFomo = None
+
+fomo_postprocessor = None
 
 # 舵机引脚定义
 p1 = Pin('P1', Pin.OUT_PP)   # 水平舵机
@@ -37,7 +44,8 @@ pan_angle = 90.0   # 水平舵机初始角度
 tilt_angle = 130.0  # 垂直舵机初始角度
 
 # 舵机极限角度
-pan_angle_limit = [-1800.0, 180.0]
+# 这里对齐到 2.4 寸 LCD 正常版本，避免异常角度导致云台和后续逻辑失控。
+pan_angle_limit = [30.0, 150.0]
 tilt_angle_limit = [80.0, 150.0]
 
 # PWM定时器初始化
@@ -79,24 +87,69 @@ p9_tim_main.callback(P9_ISR)
 sensor.reset()                         # 复位并初始化摄像头
 sensor.set_pixformat(sensor.RGB565)    # 设置像素格式为RGB565（或灰度）
 sensor.set_framesize(sensor.QVGA)      # 设置分辨率为QVGA（240x320）
+sensor.set_auto_whitebal(False)        # 对齐正常版本，避免画面颜色持续漂移
 sensor.skip_frames(time=2000)          # 等待摄像头自动调整
 
+sensor.set_pixformat(sensor.RGB565)
+sensor.set_framesize(sensor.QVGA)
+sensor.set_windowing((240, 240))
+sensor.set_auto_whitebal(False)
+sensor.skip_frames(time=2000)
+
 lcd = display.SPIDisplay(width=240,height=320)
+LCD_HINT = image.ROTATE_270
+DEBUG_LOG = False
+ENABLE_INFERENCE = True
+
+def log(*args):
+    if DEBUG_LOG:
+        print(*args)
+
+def display_frame(img):
+    lcd.write(img, hint=LCD_HINT)
+
+def show_boot_message(line1, line2=None, color=(255, 255, 0)):
+    # 启动阶段先把实时画面送上 LCD，避免模型加载或后续异常时只看到白屏。
+    img = sensor.snapshot()
+    frame_stage = "snapshot"
+    display_frame(img)
+    display_frame(img)
+    img.draw_string(2, 2, line1, color=color, mono_space=False)
+    if line2:
+        img.draw_string(2, 20, line2, color=color, mono_space=False)
+    display_frame(img)
+
+def show_runtime_message(img, line1, line2=None, color=(255, 255, 0)):
+    img.draw_string(2, 2, line1, color=color, mono_space=False)
+    if line2:
+        img.draw_string(2, 20, line2, color=color, mono_space=False)
+    display_frame(img)
+
+def show_runtime_error(stage, err):
+    img = sensor.snapshot()
+    img.draw_string(2, 2, "ERR@" + stage, color=(255, 0, 0), mono_space=False)
+    img.draw_string(2, 20, str(err), color=(255, 255, 0), mono_space=False)
+    display_frame(img)
+    sys.print_exception(err)
+
 net = None
 labels = None
 min_confidence = 0.5
 
+show_boot_message("Camera OK", "Loading model...")
 
 try:
     # 加载模型，若内存充足则分配到堆上
     net = ml.Model("trained.tflite", load_to_fb=uos.stat('trained.tflite')[6] > (gc.mem_free() - (64*1024)))
 except Exception as e:
+    show_boot_message("Model load failed", str(e), color=(255, 0, 0))
     raise Exception('模型加载失败，请确认.tflite和labels.txt已复制到设备 (' + str(e) + ')')
 
 
 try:
     labels = [line.rstrip('\n') for line in open("labels.txt")]
 except Exception as e:
+    show_boot_message("Labels load failed", str(e), color=(255, 0, 0))
     raise Exception('标签文件加载失败，请确认labels.txt已复制到设备 (' + str(e) + ')')
 
 
@@ -114,7 +167,7 @@ colors = [
 
 
 # 各类别置信度阈值（可根据实际模型表现调整）
-THRESH_TENNIS = 0.5   # 网球置信度阈值
+THRESH_TENNIS = 0.35  # 网球阈值先放宽，便于确认模型是否能检出
 THRESH_PLAYER = 0.4   # 球员置信度阈值
 THRESH_RACKET = 0.7   # 球拍置信度阈值
 threshold_list = [(math.ceil(THRESH_TENNIS * 255), 255)]  # 用于二值化的亮度阈值
@@ -588,6 +641,31 @@ def smooth_ball_radius(curr_r, prev_r):
     # 65% previous + 35% current for faster shrink when ball moves farther.
     return ((prev_r * 13) + (curr_r * 7)) // 20
 
+
+def _normalize_fomo_predictions(raw_predictions):
+    normalized = []
+    for class_detections in raw_predictions:
+        class_items = []
+        for rect, score in class_detections:
+            x, y, w, h = rect
+            class_items.append((int(x), int(y), int(w), int(h), score))
+        normalized.append(class_items)
+    return normalized
+
+
+def _make_fomo_heatmap(channel):
+    # OpenMV 4.8.1 requires a float ndarray here.
+    try:
+        return image.Image(channel * 255.0)
+    except Exception:
+        pass
+
+    try:
+        return image.Image((channel + 128) * 1.0)
+    except Exception:
+        pass
+
+    return image.Image(channel * 1.0)
 def fomo_post_process(model, inputs, outputs):
     # 【FOMO输出后处理】将模型输出的检测框坐标还原到原图坐标系，便于后续可视化和分析。
     # 参数：
@@ -596,6 +674,14 @@ def fomo_post_process(model, inputs, outputs):
     #   outputs —— 模型输出张量
     # 返回：
     #   l —— 按类别分组的检测框列表，每项为(x, y, w, h, score)
+    global fomo_postprocessor
+
+    if (fomo_postprocessor is None) and (EdgeImpulseFomo is not None):
+        fomo_postprocessor = EdgeImpulseFomo(threshold=THRESH_TENNIS)
+
+    if fomo_postprocessor is not None:
+        return _normalize_fomo_predictions(fomo_postprocessor(model, inputs, outputs))
+
     ob, oh, ow, oc = model.output_shape[0]  # 输出张量维度
 
     x_scale = inputs[0].roi[2] / ow  # x方向缩放
@@ -603,12 +689,12 @@ def fomo_post_process(model, inputs, outputs):
     scale = min(x_scale, y_scale)    # 保持比例
 
     x_offset = ((inputs[0].roi[2] - (ow * scale)) / 2) + inputs[0].roi[0]  # x偏移
-    y_offset = ((inputs[0].roi[3] - (ow * scale)) / 2) + inputs[0].roi[1]  # y偏移
+    y_offset = ((inputs[0].roi[3] - (oh * scale)) / 2) + inputs[0].roi[1]  # y偏移
 
     l = [[] for i in range(oc)]  # 按类别分组
 
     for i in range(oc):
-        img = image.Image(outputs[0][0, :, :, i] * 255)
+        img = _make_fomo_heatmap(outputs[0][0, :, :, i])
         blobs = img.find_blobs(
             threshold_list, x_stride=1, y_stride=1, area_threshold=1, pixels_threshold=1
         )
@@ -688,7 +774,7 @@ def get_grid_position(x, y, img_w, img_h, rows, cols):
 FOCAL_LENGTH_MM = 2.8  # OpenMV H7 Plus镜头典型焦距（可查具体镜头参数）
 TENNIS_DIAMETER_MM = 67  # 标准网球直径
 SENSOR_WIDTH_MM = 4.896  # OpenMV H7 Plus OV5640传感器宽度（mm）
-IMAGE_WIDTH = 320  # 你的windowing宽度
+IMAGE_WIDTH = 240  # 与 240x240 windowing 对齐
 
 def estimate_distance(pixel_diameter, sensor_width=SENSOR_WIDTH_MM, image_width=IMAGE_WIDTH):
     # 【距离估算】根据成像原理，利用像素直径反推网球到摄像头的距离。
@@ -746,8 +832,12 @@ while(True):
     clock.tick()
 
     img = sensor.snapshot()
+    # 先显示原始相机画面，保证即使后面的识别或绘图有问题，LCD 也不会停在白屏。
+    display_frame(img)
     # 先画网格线，保证任何情况下都显示
     draw_grid(img, GRID_ROWS, GRID_COLS, GRID_COLOR)
+    frame_stage = "grid"
+    show_runtime_message(img, "stage:grid")
     used_track_ids = []
 
     output_info = []
@@ -758,7 +848,18 @@ while(True):
     player_detections = []   # 存放 (x,y,w,h,score,cx,cy)
     racket_detections = []   # 存放 (x,y,w,h,score,cx,cy)
 
-    for i, detection_list in enumerate(net.predict([img], callback=fomo_post_process)):
+    frame_stage = "predict"
+    if not ENABLE_INFERENCE:
+        predictions = []
+        show_runtime_message(img, "stage:skip_predict")
+    else:
+        try:
+            predictions = net.predict([img], callback=fomo_post_process)
+        except Exception as e:
+            show_runtime_error(frame_stage, e)
+            continue
+
+    for i, detection_list in enumerate(predictions):
         # 动态调整各类别置信度
         if i == 1:
             conf_th = THRESH_TENNIS
@@ -772,7 +873,7 @@ while(True):
         if i == 0: continue  # background class
         if len(detection_list) == 0: continue  # no detections for this class?
 
-        print("********** %s **********" % labels[i])
+        log("********** %s **********" % labels[i])
         for x, y, w, h, score in detection_list:
             center_x = math.floor(x + (w / 2))
             center_y = math.floor(y + (h / 2))
@@ -792,6 +893,7 @@ while(True):
             if ("tennis" in label_l) and ("racket" not in label_l) and ("player" not in label_l):
                 detected_diameter, cue_conf = estimate_tennis_diameter(img, x, y, w, h)
                 radius = fuse_tennis_radius(w, h, detected_diameter)
+                distance_cm = 0
                 # 半径历史平滑：每10帧去极值后取均值
                 ball_radius_history.append(radius)
                 if len(ball_radius_history) > BALL_RADIUS_HISTORY_LEN:
@@ -967,7 +1069,7 @@ while(True):
                     locked_tennis_id = best_scan_tennis['tid']
                     pick_substate = PICK_TRACK
                     best_scan_tennis = None  # 清空
-                    print("[PICK] 锁定网球 ID:", locked_tennis_id)
+                    log("[PICK] 锁定网球 ID:", locked_tennis_id)
             elif pan_angle <= pan_angle_limit[0]:
                 pan_angle = pan_angle_limit[0]
                 scan_direction = 1
@@ -975,7 +1077,7 @@ while(True):
                     locked_tennis_id = best_scan_tennis['tid']
                     pick_substate = PICK_TRACK
                     best_scan_tennis = None
-                    print("[PICK] 锁定网球 ID:", locked_tennis_id)
+                    log("[PICK] 锁定网球 ID:", locked_tennis_id)
 
             # 在扫描过程中，记录检测到的网球，选择距离最小的
             for det in tennis_detections:
@@ -1021,7 +1123,7 @@ while(True):
                 if dist_cm is not None and dist_cm <= 10.0:
                     # 触发捕获指令
                     capture_cmd = 1
-                    print("[PICK] 距离<=10cm，捕获指令=1")
+                    log("[PICK] 距离<=10cm，捕获指令=1")
                     # 捕获完成后（这里假设立即完成）清除指令，解锁，回到扫描
                     capture_cmd = 0
                     locked_tennis_id = None
@@ -1057,7 +1159,7 @@ while(True):
                     player_locked = True
                     # 检查是否出现球拍
                     if racket_detections:
-                        print("[PLAY] 检测到球拍，进入等待发球状态")
+                        log("[PLAY] 检测到球拍，进入等待发球状态")
                         play_substate = PLAY_WAIT_SERVE
                 else:
                     player_locked = False
@@ -1081,10 +1183,10 @@ while(True):
                     # 发球模拟：如果检测到球拍，认为一次发球完成
                     if racket_detections:
                         balls_served += 1
-                        print("[PLAY] 发球计数:", balls_served)
+                        log("[PLAY] 发球计数:", balls_served)
                         if balls_served >= target_balls:
                             # 发球完毕，解除锁定，回到捡球模式
-                            print("[PLAY] 发球完毕，返回捡球模式")
+                            log("[PLAY] 发球完毕，返回捡球模式")
                             mode = MODE_PICK
                             pick_substate = PICK_SCAN
                             player_locked = False
@@ -1117,14 +1219,14 @@ while(True):
         tilt_angle = clamp(tilt_angle, tilt_angle_limit[0], tilt_angle_limit[1])
 
     # 可选：打印状态信息
-    print("Mode:", "PICK" if mode==MODE_PICK else "PLAY",
-          "Substate:", pick_substate if mode==MODE_PICK else play_substate,
-          "Pan:", pan_angle, "Tilt:", tilt_angle,
-          "Capture:", capture_cmd, "PlayerLocked:", player_locked)
+    log("Mode:", "PICK" if mode==MODE_PICK else "PLAY",
+        "Substate:", pick_substate if mode==MODE_PICK else play_substate,
+        "Pan:", pan_angle, "Tilt:", tilt_angle,
+        "Capture:", capture_cmd, "PlayerLocked:", player_locked)
 
     # 原有输出信息
     for obj in output_info:
-        print(obj)
-    print(f"{clock.fps():.5f} fps\n")
+        log(obj)
+    log("%.5f fps" % clock.fps())
 
-    lcd.write(img, hint=image.ROTATE_270)  # Take a picture and display the image.
+    display_frame(img)
