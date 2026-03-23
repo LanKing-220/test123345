@@ -1,0 +1,8 @@
+path: "D:/\u526F\u684C\u9762\u6587\u4EF6\u5939/\u8BBA\u6587/fomo/data/tennis-export"
+train: training
+val: testing
+nc: 3
+names:
+- Tennis
+- Tennis player
+- Tennis racket

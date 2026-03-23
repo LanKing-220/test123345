@@ -1,0 +1,14 @@
+name: fomo-rebuild
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy=1.26.*
+  - pillow
+  - pyyaml
+  - tqdm
+  - matplotlib
+  - pip:
+      - tensorflow==2.15.0
+      - opencv-python
