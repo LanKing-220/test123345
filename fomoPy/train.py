@@ -1,13 +1,18 @@
 import argparse
+import json
 import os
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
 import cv2
+import matplotlib
 import numpy as np
 import tensorflow as tf
 import yaml
 from tqdm import tqdm
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 def imread_unicode(path: Path):
@@ -206,6 +211,36 @@ def augment_photometric(
     return x_all[idx], y_all[idx]
 
 
+def save_training_artifacts(
+    history: tf.keras.callbacks.History,
+    out_dir: Path,
+    figure_path: Path,
+) -> None:
+    hist = {key: [float(v) for v in values] for key, values in history.history.items()}
+
+    history_path = out_dir / "training_history.json"
+    history_path.write_text(json.dumps(hist, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    epochs = list(range(1, len(hist.get("loss", [])) + 1))
+    if not epochs:
+        return
+
+    figure_path.parent.mkdir(parents=True, exist_ok=True)
+
+    plt.figure(figsize=(8, 5), dpi=180)
+    plt.plot(epochs, hist["loss"], color="#2563eb", linewidth=2.0, label="Training loss")
+    if "val_loss" in hist:
+        plt.plot(epochs, hist["val_loss"], color="#dc2626", linewidth=2.0, label="Validation loss")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Training and validation loss curve")
+    plt.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(figure_path, bbox_inches="tight")
+    plt.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train a local FOMO-like model from Edge Impulse export")
     parser.add_argument("--data-yaml", type=str, default="fomoPy/data/yolo_dataset/data.yaml")
@@ -220,13 +255,7 @@ def main() -> None:
     parser.add_argument("--bg-weight", type=float, default=0.25)
     parser.add_argument("--fg-weight", type=float, default=2.0)
     parser.add_argument("--focal-gamma", type=float, default=2.0)
-    parser.add_argument(
-        "--model-size",
-        type=str,
-        choices=["tiny", "small", "medium"],
-        default="tiny",
-        help="Compactness preset for OpenMV-style deployment",
-    )
+    parser.add_argument("--skip-tflite", action="store_true")
     parser.add_argument("--out-dir", type=str, default="fomoPy/outputs/fomo_local")
     args = parser.parse_args()
 
@@ -252,12 +281,9 @@ def main() -> None:
 
     print(f"Train samples after augmentation: {x_train.shape[0]}")
 
-    size_presets = {
-        "tiny": ([8, 16, 24], 32),
-        "small": ([12, 24, 32], 48),
-        "medium": ([16, 32, 48], 64),
-    }
-    stage_filters, head_filters = size_presets[args.model_size]
+    # Fixed compact layout chosen to stay close to the OpenMV deployment target.
+    stage_filters = [8, 16, 24]
+    head_filters = 32
 
     model = build_fomo_like_model(
         args.image_size,
@@ -276,7 +302,7 @@ def main() -> None:
         tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=4),
     ]
 
-    model.fit(
+    history = model.fit(
         x_train,
         y_train,
         validation_data=(x_val, y_val),
@@ -289,19 +315,36 @@ def main() -> None:
     out_dir = (workspace / args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    keras_path = out_dir / "fomo_like.keras"
-    model.save(keras_path)
+    save_training_artifacts(
+        history=history,
+        out_dir=out_dir,
+        figure_path=(workspace / "img" / "train_loss_curve.png").resolve(),
+    )
 
-    float32_path, int8_path = export_tflite_models(model, x_train, out_dir)
+    keras_path = out_dir / "fomo_like.keras"
+    h5_path = out_dir / "fomo_like.h5"
+    model.save(keras_path)
+    model.save(h5_path, include_optimizer=False)
+
+    float32_path = None
+    int8_path = None
+    if not args.skip_tflite:
+        float32_path, int8_path = export_tflite_models(model, x_train, out_dir)
 
     labels_path = out_dir / "labels.txt"
     labels_path.write_text("\n".join(["background"] + class_names), encoding="utf-8")
 
     print("Saved:")
     print(f"  {keras_path}")
-    print(f"  {float32_path} ({float32_path.stat().st_size} bytes)")
-    print(f"  {int8_path} ({int8_path.stat().st_size} bytes)")
+    print(f"  {h5_path} ({h5_path.stat().st_size} bytes)")
+    if float32_path is not None and int8_path is not None:
+        print(f"  {float32_path} ({float32_path.stat().st_size} bytes)")
+        print(f"  {int8_path} ({int8_path.stat().st_size} bytes)")
+    else:
+        print("  TFLite export skipped")
     print(f"  {labels_path}")
+    print(f"  {out_dir / 'training_history.json'}")
+    print(f"  {(workspace / 'img' / 'train_loss_curve.png').resolve()}")
 
 
 if __name__ == "__main__":

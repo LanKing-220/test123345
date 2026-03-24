@@ -1,72 +1,130 @@
-# fomoPy
+# fomoPy 使用说明
 
-`fomoPy` is a local FOMO-like training workspace for the Edge Impulse export at `../data/tennis-export`.
+`fomoPy` 现在只保留一套正式训练流程，目标是：
 
-Important:
+- 读取 `data/tennis-export` 这份 Edge Impulse 导出数据
+- 训练一个本地 FOMO-like 模型
+- 同时导出两份模型：
+  - 普通调试版 `float32 tflite`
+  - 适合 OpenMV 使用的 `int8 tflite`
 
-- Edge Impulse's official FOMO training pipeline is not published as a standalone local training repository.
-- This workspace uses the official Edge Impulse exported dataset format and converts it into a local YOLO-style label layout for training.
-- The resulting model is a local FOMO-like TensorFlow/TFLite model, not a bit-for-bit reproduction of Edge Impulse Studio training.
+不再保留：
 
-## 1. Create the environment
+- `train_quick.py`
+- 多种 `model-size` 版本切换
+- 单独的 `export_int8.py`
+
+因为 `train.py` 训练完成后已经会直接导出 OpenMV 对应的 `int8` 版本。
+
+## 1. 创建环境
+
+在项目根目录执行：
 
 ```powershell
-conda env create -f environment.yml
+conda env create -f fomoPy/environment.yml
 conda activate fomo-rebuild
 ```
 
-If the environment already exists:
+## 2. 准备数据
 
-```powershell
-conda env update -f environment.yml --prune
-conda activate fomo-rebuild
-```
-
-## 2. Convert the exported dataset
-
-Run from the repository root:
+执行：
 
 ```powershell
 python fomoPy/prepare_tennis_export.py
 ```
 
-This creates:
+它会把 `data/tennis-export` 转成训练脚本可直接读取的标签和配置文件。
+
+生成内容：
 
 - `fomoPy/data/yolo_labels/training`
 - `fomoPy/data/yolo_labels/testing`
 - `fomoPy/data/yolo_dataset/data.yaml`
 
-The images stay in the original exported dataset under `data/tennis-export`.
-
-## 3. Quick training smoke test
-
-```powershell
-python fomoPy/train_quick.py --epochs 5 --batch-size 8
-```
-
-## 4. Full training
-
-```powershell
-python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 12
-```
-
-Recommended for OpenMV alignment:
-
-- `--image-size 96 --grid-size 12`
-- or inspect your original exported model and align the input/output shapes manually
-
-## 5. Outputs
-
-Training outputs are written to:
-
-- `fomoPy/outputs/fomo_local/fomo_like.keras`
-- `fomoPy/outputs/fomo_local/fomo_like_float32.tflite`
-- `fomoPy/outputs/fomo_local/labels.txt`
-
-## 6. Dataset labels
-
-Detected classes are read directly from the Edge Impulse bounding-box export. For your tennis dataset, the classes currently include:
+当前类别：
 
 - `Tennis`
 - `Tennis player`
 - `Tennis racket`
+
+## 3. 正式训练
+
+执行：
+
+```powershell
+python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 12 --out-dir fomoPy/outputs/fomo_local
+```
+
+这版 `train.py` 已经固定为较小的 OpenMV 导向网络，不再需要手动选不同模型尺寸。
+
+## 4. 输出文件
+
+训练完成后，会在输出目录中生成：
+
+- `fomo_like.keras`
+- `fomo_like_float32.tflite`
+- `fomo_like_int8.tflite`
+- `labels.txt`
+
+说明：
+
+- `fomo_like.keras`
+  训练保存文件，用于继续训练或调试。
+
+- `fomo_like_float32.tflite`
+  普通版本，适合本地调试和分析。
+
+- `fomo_like_int8.tflite`
+  OpenMV 对应版本，优先用于部署。
+
+- `labels.txt`
+  和模型一起使用的类别文件。
+
+## 5. OpenMV 使用
+
+如果你要替换 OpenMV 工程中的模型，优先使用：
+
+- `fomoPy/outputs/fomo_local/fomo_like_int8.tflite`
+- `fomoPy/outputs/fomo_local/labels.txt`
+
+不要优先使用：
+
+- `fomo_like.keras`
+- `fomo_like_float32.tflite`
+
+## 6. 评估训练集和测试集
+
+执行：
+
+```powershell
+python fomoPy/eval_testset.py --model fomoPy/outputs/fomo_local/fomo_like_int8.tflite --report fomoPy/outputs/fomo_local/eval_metrics.json
+```
+
+这个脚本会同时输出：
+
+- 训练集结果
+- 测试集结果
+
+并保存到：
+
+- `fomoPy/outputs/fomo_local/eval_metrics.json`
+
+## 7. 推荐最简流程
+
+```powershell
+conda activate fomo-rebuild
+python fomoPy/prepare_tennis_export.py
+python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 12 --out-dir fomoPy/outputs/fomo_local
+python fomoPy/eval_testset.py --model fomoPy/outputs/fomo_local/fomo_like_int8.tflite --report fomoPy/outputs/fomo_local/eval_metrics.json
+```
+
+## 8. 当前定位
+
+这套代码是“本地可训练、可导出 OpenMV 对应 int8 模型”的简化版本。
+
+它不是 Edge Impulse 官方 Studio 后端训练器本体，但已经保留了你现在实际需要的核心链路：
+
+- 数据准备
+- 正式训练
+- OpenMV 对应导出
+- 训练集 / 测试集评估
