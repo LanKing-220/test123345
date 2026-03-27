@@ -25,6 +25,11 @@ LABELS_PATH = "labels.txt"
 FRAME_SIZE = sensor.QVGA
 WINDOW_SIZE = (240, 240)
 MIN_CONFIDENCE = 0.5
+CLASS_CONFIDENCE = {
+    "Tennis": 0.35,
+    "Tennis player": 0.40,
+    "Tennis racket": 0.35,
+}
 
 TARGET_LABEL = "Tennis"
 DRAW_RADIUS = 12
@@ -121,7 +126,15 @@ def load_labels():
         raise Exception('Failed to load "labels.txt": ' + str(e))
 
 
-threshold_list = [(math.ceil(MIN_CONFIDENCE * 255), 255)]
+threshold_lists = []
+
+
+def build_threshold_lists(labels):
+    out = []
+    for label in labels:
+        score = CLASS_CONFIDENCE.get(label, MIN_CONFIDENCE)
+        out.append((math.ceil(score * 255), 255))
+    return out
 
 
 def fomo_post_process(model, inputs, outputs):
@@ -136,9 +149,11 @@ def fomo_post_process(model, inputs, outputs):
 
     detections = [[] for _ in range(oc)]
     for i in range(oc):
+        threshold_pair = threshold_lists[i] if i < len(threshold_lists) else (math.ceil(MIN_CONFIDENCE * 255), 255)
+        local_thresholds = [threshold_pair]
         img = image.Image(outputs[0][0, :, :, i] * 255)
         blobs = img.find_blobs(
-            threshold_list,
+            local_thresholds,
             x_stride=1,
             y_stride=1,
             area_threshold=1,
@@ -147,7 +162,7 @@ def fomo_post_process(model, inputs, outputs):
         for b in blobs:
             rect = b.rect()
             x, y, w, h = rect
-            score = img.get_statistics(thresholds=threshold_list, roi=rect).l_mean() / 255.0
+            score = img.get_statistics(thresholds=local_thresholds, roi=rect).l_mean() / 255.0
             x = int((x * scale) + x_offset)
             y = int((y * scale) + y_offset)
             w = int(w * scale)
@@ -208,11 +223,14 @@ def draw_all_detections(img, predictions, labels):
 
 
 def main():
+    global threshold_lists
+
     setup_sensor()
     setup_servos()
 
     net = load_model()
     labels = load_labels()
+    threshold_lists = build_threshold_lists(labels)
     clock = time.clock()
 
     print("OpenMV FOMO runtime started")

@@ -4,14 +4,14 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import tensorflow as tf
 import yaml
 
-from train import parse_yolo_file
+from train import assign_object_to_target, parse_yolo_file
 
 
 def imread_unicode(path: Path):
@@ -61,16 +61,33 @@ def load_image(image_path: Path, image_size: int) -> np.ndarray:
     return img.astype(np.float32) / 255.0
 
 
-def build_gt_cells(label_path: Path, grid_size: int, num_classes: int) -> np.ndarray:
-    gt = np.zeros((grid_size, grid_size, num_classes), dtype=np.uint8)
-    for cid, cx, cy, _, _ in parse_yolo_file(label_path):
-        cx = float(np.clip(cx, 0.0, 0.9999))
-        cy = float(np.clip(cy, 0.0, 0.9999))
-        gx = min(int(cx * grid_size), grid_size - 1)
-        gy = min(int(cy * grid_size), grid_size - 1)
-        if 0 <= cid < num_classes:
-            gt[gy, gx, cid] = 1
-    return gt
+def build_gt_cells(
+    label_path: Path,
+    grid_size: int,
+    num_classes: int,
+    label_mode: str,
+    bbox_radius_scale: float,
+    min_target_radius: int,
+    max_target_radius: int,
+    gt_positive_threshold: float,
+) -> np.ndarray:
+    target = np.zeros((grid_size, grid_size, num_classes + 1), dtype=np.float32)
+    for cid, cx, cy, w, h in parse_yolo_file(label_path):
+        assign_object_to_target(
+            target=target,
+            cid=cid,
+            cx=cx,
+            cy=cy,
+            w=w,
+            h=h,
+            grid_size=grid_size,
+            num_classes=num_classes,
+            label_mode=label_mode,
+            bbox_radius_scale=bbox_radius_scale,
+            min_target_radius=min_target_radius,
+            max_target_radius=max_target_radius,
+        )
+    return (target[..., 1:] >= gt_positive_threshold).astype(np.uint8)
 
 
 def run_tflite(interpreter: tf.lite.Interpreter, image: np.ndarray) -> np.ndarray:
@@ -120,10 +137,23 @@ def load_model_runner(model_path: Path) -> Tuple[str, Callable[[np.ndarray], np.
     raise ValueError(f"unsupported model format: {model_path}")
 
 
-def logits_to_pred_cells(output: np.ndarray, threshold: float) -> np.ndarray:
+def parse_class_thresholds(text: Optional[str], num_classes: int) -> Optional[np.ndarray]:
+    if not text:
+        return None
+    values = [float(x.strip()) for x in text.split(",") if x.strip()]
+    if len(values) != num_classes:
+        raise ValueError(f"class thresholds count mismatch: expected {num_classes}, got {len(values)}")
+    return np.asarray(values, dtype=np.float32)
+
+
+def logits_to_pred_cells(output: np.ndarray, threshold: float, class_thresholds: Optional[np.ndarray]) -> np.ndarray:
     # Output layout: [grid_h, grid_w, num_classes + 1], channel 0 is background.
     fg = output[..., 1:]
-    pred = (fg >= threshold).astype(np.uint8)
+    if class_thresholds is None:
+        pred = (fg >= threshold).astype(np.uint8)
+    else:
+        thr = class_thresholds.reshape((1, 1, -1))
+        pred = (fg >= thr).astype(np.uint8)
     return pred
 
 
@@ -168,6 +198,12 @@ def evaluate_split(
     image_size: int,
     grid_size: int,
     threshold: float,
+    class_thresholds: Optional[np.ndarray],
+    label_mode: str,
+    bbox_radius_scale: float,
+    min_target_radius: int,
+    max_target_radius: int,
+    gt_positive_threshold: float,
 ) -> Dict[str, object]:
     gt_list = []
     pred_list = []
@@ -185,8 +221,17 @@ def evaluate_split(
 
         image = load_image(image_path, image_size)
         output = predict_fn(image)
-        pred = logits_to_pred_cells(output, threshold)
-        gt = build_gt_cells(label_path, grid_size, num_classes)
+        pred = logits_to_pred_cells(output, threshold, class_thresholds)
+        gt = build_gt_cells(
+            label_path,
+            grid_size,
+            num_classes,
+            label_mode=label_mode,
+            bbox_radius_scale=bbox_radius_scale,
+            min_target_radius=min_target_radius,
+            max_target_radius=max_target_radius,
+            gt_positive_threshold=gt_positive_threshold,
+        )
 
         gt_list.append(gt)
         pred_list.append(pred)
@@ -238,6 +283,12 @@ def main() -> None:
     parser.add_argument("--image-size", type=int, default=96)
     parser.add_argument("--grid-size", type=int, default=12)
     parser.add_argument("--threshold", type=float, default=0.5)
+    parser.add_argument("--class-thresholds", type=str, default="")
+    parser.add_argument("--label-mode", type=str, choices=["point", "soft-box"], default="point")
+    parser.add_argument("--bbox-radius-scale", type=float, default=0.25)
+    parser.add_argument("--min-target-radius", type=int, default=0)
+    parser.add_argument("--max-target-radius", type=int, default=3)
+    parser.add_argument("--gt-positive-threshold", type=float, default=0.05)
     parser.add_argument("--report", type=str, default="fomoPy/outputs/fomo_local/eval_metrics.json")
     args = parser.parse_args()
 
@@ -256,6 +307,7 @@ def main() -> None:
     test_label_dir = labels_root / "testing"
     class_names = list(cfg["names"])
     num_classes = int(cfg["nc"])
+    class_thresholds = parse_class_thresholds(args.class_thresholds, num_classes)
 
     model_format, predict_fn = load_model_runner(model_path)
 
@@ -268,6 +320,12 @@ def main() -> None:
         image_size=args.image_size,
         grid_size=args.grid_size,
         threshold=args.threshold,
+        class_thresholds=class_thresholds,
+        label_mode=args.label_mode,
+        bbox_radius_scale=args.bbox_radius_scale,
+        min_target_radius=args.min_target_radius,
+        max_target_radius=args.max_target_radius,
+        gt_positive_threshold=args.gt_positive_threshold,
     )
     test_result = evaluate_split(
         predict_fn=predict_fn,
@@ -278,12 +336,22 @@ def main() -> None:
         image_size=args.image_size,
         grid_size=args.grid_size,
         threshold=args.threshold,
+        class_thresholds=class_thresholds,
+        label_mode=args.label_mode,
+        bbox_radius_scale=args.bbox_radius_scale,
+        min_target_radius=args.min_target_radius,
+        max_target_radius=args.max_target_radius,
+        gt_positive_threshold=args.gt_positive_threshold,
     )
 
     report = {
         "model": str(model_path),
         "model_format": model_format,
         "threshold": args.threshold,
+        "class_thresholds": class_thresholds.tolist() if class_thresholds is not None else None,
+        "label_mode": args.label_mode,
+        "bbox_radius_scale": args.bbox_radius_scale,
+        "gt_positive_threshold": args.gt_positive_threshold,
         "metric_note": "accuracy is grid-cell accuracy; precision/recall/f1 are usually more meaningful for FOMO-style detection",
         "train": train_result,
         "test": test_result,

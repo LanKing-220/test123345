@@ -169,7 +169,7 @@ colors = [
 # 各类别置信度阈值（可根据实际模型表现调整）
 THRESH_TENNIS = 0.35  # 网球阈值先放宽，便于确认模型是否能检出
 THRESH_PLAYER = 0.4   # 球员置信度阈值
-THRESH_RACKET = 0.7   # 球拍置信度阈值
+THRESH_RACKET = 0.35  # 球拍阈值适当放宽，否则容易出现全漏检
 threshold_list = [(math.ceil(THRESH_TENNIS * 255), 255)]  # 用于二值化的亮度阈值
 
 # 常用颜色常量

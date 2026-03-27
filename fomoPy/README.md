@@ -5,8 +5,8 @@
 - 读取 `data/tennis-export` 这份 Edge Impulse 导出数据
 - 训练一个本地 FOMO-like 模型
 - 同时导出两份模型：
-  - 普通调试版 `float32 tflite`
-  - 适合 OpenMV 使用的 `int8 tflite`
+  - OpenMV 4.8.1 可直接测试的 `float32 tflite`
+  - 适合 OpenMV 部署的 `int8 tflite`
 
 不再保留：
 
@@ -52,10 +52,11 @@ python fomoPy/prepare_tennis_export.py
 执行：
 
 ```powershell
-python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 12 --out-dir fomoPy/outputs/fomo_local
+python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 12 --metric-threshold 0.35 --label-mode soft-box --bbox-radius-scale 0.25 --auto-class-weight --focus-classes "Tennis player,Tennis racket" --focus-multiplier 3 --out-dir fomoPy/outputs/fomo_local
 ```
 
-这版 `train.py` 已经固定为较小的 OpenMV 导向网络，不再需要手动选不同模型尺寸。
+这版 `train.py` 会根据 `image-size / grid-size` 自动对齐输出网格。
+推荐继续从 `96 / 12` 开始，兼顾 OpenMV 体积与召回率。
 
 ## 4. 输出文件
 
@@ -65,14 +66,18 @@ python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 1
 - `fomo_like_float32.tflite`
 - `fomo_like_int8.tflite`
 - `labels.txt`
+- `fomo_like.h5`（仅在显式加 `--save-h5` 时输出）
 
 说明：
 
 - `fomo_like.keras`
   训练保存文件，用于继续训练或调试。
 
+- `fomo_like.h5`
+  兼容旧工具链时可选输出，默认不保存，避免 Windows 路径下卡住训练流程。
+
 - `fomo_like_float32.tflite`
-  普通版本，适合本地调试和分析。
+  OpenMV 4.8.1 的 float 推理可直接测试，也适合本地调试和分析。
 
 - `fomo_like_int8.tflite`
   OpenMV 对应版本，优先用于部署。
@@ -87,17 +92,23 @@ python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 1
 - `fomoPy/outputs/fomo_local/fomo_like_int8.tflite`
 - `fomoPy/outputs/fomo_local/labels.txt`
 
-不要优先使用：
+如果你的 OpenMV 固件已经升级到 `4.8.1`，也可以先把：
+
+- `fomoPy/outputs/fomo_local/fomo_like_float32.tflite`
+
+复制成设备上的 `trained.tflite` 直接做 float 版本调试。
+
+不要优先直接部署：
 
 - `fomo_like.keras`
-- `fomo_like_float32.tflite`
+- `fomo_like_float32.tflite` 到长期量产版本
 
 ## 6. 评估训练集和测试集
 
 执行：
 
 ```powershell
-python fomoPy/eval_testset.py --model fomoPy/outputs/fomo_local/fomo_like_int8.tflite --report fomoPy/outputs/fomo_local/eval_metrics.json
+python fomoPy/eval_testset.py --model fomoPy/outputs/fomo_local/fomo_like_int8.tflite --threshold 0.35 --class-thresholds "0.35,0.40,0.35" --label-mode soft-box --report fomoPy/outputs/fomo_local/eval_metrics.json
 ```
 
 这个脚本会同时输出：
@@ -114,8 +125,8 @@ python fomoPy/eval_testset.py --model fomoPy/outputs/fomo_local/fomo_like_int8.t
 ```powershell
 conda activate fomo-rebuild
 python fomoPy/prepare_tennis_export.py
-python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 12 --out-dir fomoPy/outputs/fomo_local
-python fomoPy/eval_testset.py --model fomoPy/outputs/fomo_local/fomo_like_int8.tflite --report fomoPy/outputs/fomo_local/eval_metrics.json
+python fomoPy/train.py --epochs 80 --batch-size 16 --image-size 96 --grid-size 12 --metric-threshold 0.35 --label-mode soft-box --bbox-radius-scale 0.25 --auto-class-weight --focus-classes "Tennis player,Tennis racket" --focus-multiplier 3 --out-dir fomoPy/outputs/fomo_local
+python fomoPy/eval_testset.py --model fomoPy/outputs/fomo_local/fomo_like_int8.tflite --threshold 0.35 --class-thresholds "0.35,0.40,0.35" --label-mode soft-box --report fomoPy/outputs/fomo_local/eval_metrics.json
 ```
 
 ## 8. 当前定位
