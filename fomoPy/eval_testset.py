@@ -6,19 +6,17 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-import cv2
 import numpy as np
 import tensorflow as tf
-import yaml
 
-from train import assign_object_to_target, parse_yolo_file
-
-
-def imread_unicode(path: Path):
-    data = np.fromfile(str(path), dtype=np.uint8)
-    if data.size == 0:
-        return None
-    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+try:
+    from fomoPy.local_fomo_common import collect_image_paths, parse_yolo_file, resolve_dataset_layout, resize_rgb_image
+except ImportError:
+    from local_fomo_common import collect_image_paths, parse_yolo_file, resolve_dataset_layout, resize_rgb_image
+try:
+    from fomoPy.local_train_common import assign_object_to_target
+except ImportError:
+    from local_train_common import assign_object_to_target
 
 
 def windows_short_path(path: Path) -> str:
@@ -50,15 +48,6 @@ def safe_model_path(path: Path) -> str:
     temp_path = temp_dir / path.name
     shutil.copy2(path, temp_path)
     return str(temp_path)
-
-
-def load_image(image_path: Path, image_size: int) -> np.ndarray:
-    img = imread_unicode(image_path)
-    if img is None:
-        raise FileNotFoundError(f"failed to read image: {image_path}")
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (image_size, image_size), interpolation=cv2.INTER_AREA)
-    return img.astype(np.float32) / 255.0
 
 
 def build_gt_cells(
@@ -209,17 +198,12 @@ def evaluate_split(
     pred_list = []
     image_rows = []
 
-    image_paths = []
-    for ext in ("*.jpg", "*.jpeg", "*.png", "*.bmp"):
-        image_paths.extend(image_dir.glob(ext))
-    image_paths = sorted(image_paths)
-
-    for image_path in image_paths:
+    for image_path in collect_image_paths(image_dir):
         label_path = label_dir / f"{image_path.stem}.txt"
         if not label_path.exists():
             continue
 
-        image = load_image(image_path, image_size)
+        image = resize_rgb_image(image_path, image_size=image_size, normalize=True)
         output = predict_fn(image)
         pred = logits_to_pred_cells(output, threshold, class_thresholds)
         gt = build_gt_cells(
@@ -298,15 +282,14 @@ def main() -> None:
     labels_root = workspace / args.labels_dir
     report_path = workspace / args.report
     report_path.parent.mkdir(parents=True, exist_ok=True)
+    dataset = resolve_dataset_layout(workspace, data_yaml, labels_root)
 
-    cfg = yaml.safe_load(data_yaml.read_text(encoding="utf-8"))
-    dataset_root = Path(cfg["path"]) if Path(cfg["path"]).is_absolute() else (workspace / cfg["path"]).resolve()
-    train_img_dir = dataset_root / cfg["train"]
-    test_img_dir = dataset_root / cfg["val"]
-    train_label_dir = labels_root / "training"
-    test_label_dir = labels_root / "testing"
-    class_names = list(cfg["names"])
-    num_classes = int(cfg["nc"])
+    train_img_dir = dataset.train_img_dir
+    test_img_dir = dataset.val_img_dir
+    train_label_dir = dataset.train_label_dir
+    test_label_dir = dataset.val_label_dir
+    class_names = dataset.class_names
+    num_classes = dataset.num_classes
     class_thresholds = parse_class_thresholds(args.class_thresholds, num_classes)
 
     model_format, predict_fn = load_model_runner(model_path)

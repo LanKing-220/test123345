@@ -1,277 +1,108 @@
-# OpenMV FOMO runtime for the tennis model.
-#
-# Expected files on the OpenMV device:
-# - trained.tflite
-# - labels.txt
-# - main_openmv.py (rename to main.py if you want it to auto-run)
-# - pid.py
-
 import gc
-import math
+import sys
 import time
 import uos
 
+import display
 import image
 import ml
 import sensor
-from pyb import Pin, Timer
-
-from pid import PID
 
 
 MODEL_PATH = "trained.tflite"
 LABELS_PATH = "labels.txt"
-
-FRAME_SIZE = sensor.QVGA
-WINDOW_SIZE = (240, 240)
-MIN_CONFIDENCE = 0.5
-CLASS_CONFIDENCE = {
-    "Tennis": 0.35,
-    "Tennis player": 0.40,
-    "Tennis racket": 0.35,
-}
-
-TARGET_LABEL = "Tennis"
-DRAW_RADIUS = 12
-
-# Servo limits.
-PAN_LIMIT = (30.0, 150.0)
-TILT_LIMIT = (80.0, 150.0)
-PAN_START = 90.0
-TILT_START = 130.0
-
-# PID gains. Tune on-device if needed.
-PAN_PID = PID(p=0.08, i=0.0, d=0.015, imax=10)
-TILT_PID = PID(p=0.08, i=0.0, d=0.015, imax=10)
-
-COLORS = [
-    (255, 0, 0),
-    (0, 255, 0),
-    (255, 255, 0),
-    (0, 0, 255),
-    (255, 0, 255),
-    (0, 255, 255),
-    (255, 255, 255),
-]
+LCD_HINT = image.ROTATE_270
 
 
-pan_angle = PAN_START
-tilt_angle = TILT_START
-
-
-def clamp(v, lo, hi):
-    if v < lo:
-        return lo
-    if v > hi:
-        return hi
-    return v
-
-
-def setup_sensor():
+def init_camera():
     sensor.reset()
     sensor.set_pixformat(sensor.RGB565)
-    sensor.set_framesize(FRAME_SIZE)
-    sensor.set_windowing(WINDOW_SIZE)
+    sensor.set_framesize(sensor.QVGA)
+    sensor.set_windowing((240, 240))
     sensor.set_auto_whitebal(False)
     sensor.skip_frames(time=2000)
 
 
-def setup_servos():
-    p1 = Pin("P1", Pin.OUT_PP)
-    p9 = Pin("P9", Pin.OUT_PP)
-
-    p1_pulse = Timer(12)
-    p1_main = Timer(13, freq=50)
-    p9_pulse = Timer(14)
-    p9_main = Timer(15, freq=50)
-
-    def p1_isr0(_):
-        p1.low()
-        p1_pulse.deinit()
-
-    def p1_isr(_):
-        psr = int(pan_angle * 1000 / 9 + 5000) - 1
-        p1.high()
-        p1_pulse.init(prescaler=psr, period=23)
-        p1_pulse.callback(p1_isr0)
-
-    def p9_isr0(_):
-        p9.low()
-        p9_pulse.deinit()
-
-    def p9_isr(_):
-        psr = int(tilt_angle * 1000 / 9 + 5000) - 1
-        p9.high()
-        p9_pulse.init(prescaler=psr, period=23)
-        p9_pulse.callback(p9_isr0)
-
-    p1_main.callback(p1_isr)
-    p9_main.callback(p9_isr)
-
-
-def load_model():
+def init_lcd():
     try:
-        return ml.Model(
-            MODEL_PATH,
-            load_to_fb=uos.stat(MODEL_PATH)[6] > (gc.mem_free() - (64 * 1024)),
-        )
-    except Exception as e:
-        raise Exception('Failed to load "trained.tflite": ' + str(e))
-
-
-def load_labels():
-    try:
-        return [line.rstrip("\n") for line in open(LABELS_PATH)]
-    except Exception as e:
-        raise Exception('Failed to load "labels.txt": ' + str(e))
-
-
-threshold_lists = []
-
-
-def build_threshold_lists(labels):
-    out = []
-    for label in labels:
-        score = CLASS_CONFIDENCE.get(label, MIN_CONFIDENCE)
-        out.append((math.ceil(score * 255), 255))
-    return out
-
-
-def fomo_post_process(model, inputs, outputs):
-    ob, oh, ow, oc = model.output_shape[0]
-
-    x_scale = inputs[0].roi[2] / ow
-    y_scale = inputs[0].roi[3] / oh
-    scale = min(x_scale, y_scale)
-
-    x_offset = ((inputs[0].roi[2] - (ow * scale)) / 2) + inputs[0].roi[0]
-    y_offset = ((inputs[0].roi[3] - (oh * scale)) / 2) + inputs[0].roi[1]
-
-    detections = [[] for _ in range(oc)]
-    for i in range(oc):
-        threshold_pair = threshold_lists[i] if i < len(threshold_lists) else (math.ceil(MIN_CONFIDENCE * 255), 255)
-        local_thresholds = [threshold_pair]
-        img = image.Image(outputs[0][0, :, :, i] * 255)
-        blobs = img.find_blobs(
-            local_thresholds,
-            x_stride=1,
-            y_stride=1,
-            area_threshold=1,
-            pixels_threshold=1,
-        )
-        for b in blobs:
-            rect = b.rect()
-            x, y, w, h = rect
-            score = img.get_statistics(thresholds=local_thresholds, roi=rect).l_mean() / 255.0
-            x = int((x * scale) + x_offset)
-            y = int((y * scale) + y_offset)
-            w = int(w * scale)
-            h = int(h * scale)
-            detections[i].append((x, y, w, h, score))
-    return detections
-
-
-def find_best_target(predictions, labels):
-    if TARGET_LABEL not in labels:
+        return display.SPIDisplay(width=240, height=320)
+    except Exception as err:
+        print("LCD init failed:", err)
         return None
 
-    target_index = labels.index(TARGET_LABEL)
-    if target_index >= len(predictions):
-        return None
 
-    best = None
-    best_score = None
-    for x, y, w, h, score in predictions[target_index]:
-        if (best_score is None) or (score > best_score):
-            best = (x, y, w, h, score)
-            best_score = score
-    return best
+def show(lcd, img, line1, line2=None, color=(255, 255, 0)):
+    if line1:
+        img.draw_string(2, 2, line1, color=color, mono_space=False)
+    if line2:
+        img.draw_string(2, 22, line2, color=color, mono_space=False)
+    if lcd is not None:
+        lcd.write(img, hint=LCD_HINT)
 
 
-def update_servos(target_cx, target_cy, width, height):
-    global pan_angle, tilt_angle
-
-    err_x = (width / 2) - target_cx
-    err_y = target_cy - (height / 2)
-
-    pan_angle += PAN_PID.get_pid(err_x, 1.0)
-    tilt_angle += TILT_PID.get_pid(err_y, 1.0)
-
-    pan_angle = clamp(pan_angle, PAN_LIMIT[0], PAN_LIMIT[1])
-    tilt_angle = clamp(tilt_angle, TILT_LIMIT[0], TILT_LIMIT[1])
-
-
-def draw_all_detections(img, predictions, labels):
-    for i, detection_list in enumerate(predictions):
-        if i == 0:
-            continue
-        if len(detection_list) == 0:
-            continue
-
-        color = COLORS[i % len(COLORS)]
-        for x, y, w, h, score in detection_list:
-            center_x = math.floor(x + (w / 2))
-            center_y = math.floor(y + (h / 2))
-            img.draw_circle((center_x, center_y, DRAW_RADIUS), color=color)
-            img.draw_string(
-                x,
-                max(0, y - 12),
-                "%s %.2f" % (labels[i], score),
-                color=color,
-                mono_space=False,
-            )
+def smoke_callback(model, inputs, outputs):
+    return {
+        "input_shape": model.input_shape,
+        "output_shape": model.output_shape,
+        "output_count": len(outputs),
+    }
 
 
 def main():
-    global threshold_lists
+    init_camera()
+    lcd = init_lcd()
 
-    setup_sensor()
-    setup_servos()
+    img = sensor.snapshot()
+    show(lcd, img, "Boot OK", "Checking files...")
 
-    net = load_model()
-    labels = load_labels()
-    threshold_lists = build_threshold_lists(labels)
+    try:
+        model_size = uos.stat(MODEL_PATH)[6]
+        labels = [line.rstrip("\n") for line in open(LABELS_PATH)]
+    except Exception as err:
+        print("File check failed:", err)
+        img = sensor.snapshot()
+        show(lcd, img, "FILE FAIL", str(err), color=(255, 0, 0))
+        raise
+
+    print("Model file:", MODEL_PATH, "size=", model_size)
+    print("Labels:", labels)
+
+    try:
+        net = ml.Model(
+            MODEL_PATH,
+            load_to_fb=model_size > (gc.mem_free() - (64 * 1024)),
+        )
+    except Exception as err:
+        print("Model load failed:", err)
+        img = sensor.snapshot()
+        show(lcd, img, "LOAD FAIL", str(err), color=(255, 0, 0))
+        raise
+
+    print("Model input shape:", net.input_shape)
+    print("Model output shape:", net.output_shape)
+
+    try:
+        img = sensor.snapshot()
+        result = net.predict([img], callback=smoke_callback)
+        print("Predict OK:", result)
+    except Exception as err:
+        print("Predict failed:", err)
+        img = sensor.snapshot()
+        show(lcd, img, "PRED FAIL", str(err), color=(255, 0, 0))
+        raise
+
     clock = time.clock()
-
-    print("OpenMV FOMO runtime started")
-    print("Target label:", TARGET_LABEL)
-
     while True:
         clock.tick()
         img = sensor.snapshot()
-
-        predictions = net.predict([img], callback=fomo_post_process)
-        draw_all_detections(img, predictions, labels)
-
-        best = find_best_target(predictions, labels)
-        if best is not None:
-            x, y, w, h, score = best
-            cx = math.floor(x + (w / 2))
-            cy = math.floor(y + (h / 2))
-
-            update_servos(cx, cy, img.width(), img.height())
-
-            img.draw_cross(cx, cy, color=(0, 255, 0), size=12, thickness=2)
-            img.draw_string(
-                2,
-                2,
-                "track %s %.2f" % (TARGET_LABEL, score),
-                color=(0, 255, 0),
-                mono_space=False,
-            )
-
-            print("target", TARGET_LABEL, "x", cx, "y", cy, "score", score)
-        else:
-            img.draw_string(2, 2, "target lost", color=(255, 0, 0), mono_space=False)
-            print("target lost")
-
-        img.draw_string(
-            2,
-            20,
-            "pan %.1f tilt %.1f fps %.2f" % (pan_angle, tilt_angle, clock.fps()),
-            color=(255, 255, 0),
-            mono_space=False,
-        )
+        show(lcd, img, "MODEL OK", "%.2f fps" % clock.fps(), color=(0, 255, 0))
+        print("fps:", clock.fps())
+        time.sleep_ms(200)
 
 
-main()
+try:
+    main()
+except Exception as err:
+    sys.print_exception(err)
+    while True:
+        time.sleep_ms(1000)
