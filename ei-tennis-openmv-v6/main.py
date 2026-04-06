@@ -24,6 +24,15 @@ ENABLE_UART = True
 UART_PORT = 3
 UART_BAUDRATE = 115200
 UART_TIMEOUT_CHAR = 120
+UART_RX_BUFFER_MAX = 96
+
+# 通信状态：0=no link, 1=linked(收到HI), 2=ok(收到OK)
+COMM_NO_LINK = 0
+COMM_LINKED = 1
+COMM_OK = 2
+comm_state = COMM_NO_LINK
+last_hello_ms = 0
+HELLO_INTERVAL_MS = 5000
 
 THRESH_TENNIS = 0.35
 # 人和球拍更容易误触发，阈值调高后会更保守，降低敏感度。
@@ -114,6 +123,9 @@ PICK_CONFIRM_DURATION_MS = 2000
 PICK_TRACK_DURATION_MS = 20000
 PLAYER_DETECT_COUNTDOWN_MS = 5000
 COUNTDOWN_FONT_SCALE = 5
+PLAY_RACKET_CONFIRM_FRAMES = 2
+RACKET_LINK_MARGIN_X_RATIO = 0.60
+RACKET_LINK_MARGIN_Y_RATIO = 0.35
 SCAN_ALIGN_MARGIN = 1.0
 RETURN_LOCK_MARGIN = 2.0
 RETURN_PAN_STEP = 1.0
@@ -130,6 +142,7 @@ capture_cmd = 0
 capture_flash_frames = 0
 player_locked = False
 balls_served = 0
+balls_picked = 0
 target_balls = 5
 scan_direction = 1
 scan_speed = SCAN_PAN_STEP
@@ -148,8 +161,10 @@ pick_confirm_start_ms = 0
 pick_track_start_ms = 0
 picker_feedback_pin = None
 picker_feedback_state = 0
+picker_uart_done_pending = 0
 next_target_id = 1
 current_racket_id = 0
+uart_rx_buffer = ""
 
 ENABLE_TENNIS_REFINEMENT = True
 HOUGH_INTERVAL = 3
@@ -283,8 +298,14 @@ def init_picker_feedback():
     picker_feedback_pin = Pin(PICKER_FEEDBACK_PIN, Pin.IN)
 
 
-def read_picker_feedback():
-    global picker_feedback_state
+def read_picker_feedback(consume=True):
+    global picker_feedback_state, picker_uart_done_pending
+
+    if picker_uart_done_pending > 0:
+        picker_feedback_state = 1
+        if consume:
+            picker_uart_done_pending -= 1
+        return 1
 
     if picker_feedback_pin is None:
         picker_feedback_state = 0
@@ -297,9 +318,140 @@ def read_picker_feedback():
     return picker_feedback_state
 
 
+def uart_bytes_to_text(data):
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+
+    try:
+        return data.decode()
+    except Exception:
+        pass
+
+    text = ""
+    for b in data:
+        if b in (10, 13) or (32 <= b <= 126):
+            text += chr(b)
+    return text
+
+
+def parse_uart_event_count(text):
+    separators = (":", ",", "=", " ")
+    for sep in separators:
+        idx = text.find(sep)
+        if idx < 0:
+            continue
+        tail = text[idx + 1 :].strip()
+        if not tail:
+            continue
+        try:
+            value = int(tail)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+    return 1
+
+
+def handle_uart_line(line):
+    global balls_served, balls_picked, picker_uart_done_pending
+    global comm_state
+
+    if not line:
+        return
+
+    text = line.strip()
+    if not text:
+        return
+
+    upper = text.upper()
+    count = parse_uart_event_count(upper)
+
+    # 处理握手与链路状态：HI 表示链路建立，OK 表示主机确认
+    if upper == "HI" or upper.startswith("HI "):
+        try:
+            comm_state = COMM_LINKED
+        except Exception:
+            pass
+        return
+    if upper == "OK" or upper.startswith("OK "):
+        try:
+            comm_state = COMM_OK
+        except Exception:
+            pass
+        return
+
+    if upper.startswith("SERVED") or upper.startswith("SERVE"):
+        balls_served += count
+        return
+
+    if (
+        upper.startswith("PICKED")
+        or upper.startswith("PICK")
+        or upper.startswith("PICKUP")
+        or upper.startswith("COLLECT")
+    ):
+        balls_picked += count
+        picker_uart_done_pending += count
+
+
+def process_uart_rx():
+    global uart_rx_buffer
+
+    if uart is None:
+        return
+
+    try:
+        waiting = uart.any()
+    except Exception:
+        return
+
+    if not waiting:
+        return
+
+    try:
+        data = uart.read(waiting)
+    except Exception:
+        return
+
+    text = uart_bytes_to_text(data)
+    if not text:
+        return
+
+    uart_rx_buffer += text
+    if len(uart_rx_buffer) > UART_RX_BUFFER_MAX:
+        uart_rx_buffer = uart_rx_buffer[-UART_RX_BUFFER_MAX:]
+
+    while True:
+        line_end = uart_rx_buffer.find("\n")
+        if line_end < 0:
+            break
+        line = uart_rx_buffer[:line_end].strip()
+        uart_rx_buffer = uart_rx_buffer[line_end + 1 :]
+        handle_uart_line(line)
+
+
 def display_frame(img):
     if lcd is not None:
         lcd.write(img, hint=LCD_HINT)
+
+
+def try_send_hello():
+    global last_hello_ms, comm_state
+    if uart is None:
+        return
+    if comm_state != COMM_NO_LINK:
+        return
+    now = time.ticks_ms()
+    if last_hello_ms <= 0:
+        # 发送初始 hello
+        uart_write_line("hello")
+        last_hello_ms = now
+        return
+    if time.ticks_diff(now, last_hello_ms) >= HELLO_INTERVAL_MS:
+        uart_write_line("hello")
+        last_hello_ms = now
 
 
 def show_message(line1, line2=None, color=YELLOW):
@@ -730,9 +882,58 @@ def target_distance_cm(target):
     return float(dist_cm)
 
 
-def choose_racket_target(candidates):
+def is_live_target(target):
+    return target is not None and target.get("miss", 0) == 0
+
+
+def is_racket_linked_to_player(player_target, racket_target):
+    if (not is_live_target(player_target)) or racket_target is None:
+        return False
+
+    required_keys = ("x", "y", "w", "h", "cx", "cy")
+    for key in required_keys:
+        if key not in player_target or key not in racket_target:
+            return False
+
+    px = player_target["x"]
+    py = player_target["y"]
+    pw = max(1, player_target["w"])
+    ph = max(1, player_target["h"])
+    rcx = racket_target["cx"]
+    rcy = racket_target["cy"]
+    rw = max(1, racket_target["w"])
+    rh = max(1, racket_target["h"])
+
+    margin_x = max(18, int(pw * RACKET_LINK_MARGIN_X_RATIO))
+    margin_y = max(16, int(ph * RACKET_LINK_MARGIN_Y_RATIO))
+    left = px - margin_x
+    right = px + pw + margin_x
+    top = py - margin_y
+    bottom = py + ph + margin_y
+
+    if rcx < left or rcx > right or rcy < top or rcy > bottom:
+        return False
+
+    if rh > int(ph * 12 / 10):
+        return False
+    if rw > int(pw * 9 / 10):
+        return False
+
+    return True
+
+
+def choose_racket_target(candidates, player_target=None):
     if not candidates:
         return None
+
+    if is_live_target(player_target):
+        linked_candidates = []
+        for cand in candidates:
+            if is_racket_linked_to_player(player_target, cand):
+                linked_candidates.append(cand)
+        candidates = linked_candidates
+        if not candidates:
+            return None
 
     best = None
     best_key = None
@@ -741,7 +942,13 @@ def choose_racket_target(candidates):
         center_dy = cand["cy"] - 120
         center_d2 = (center_dx * center_dx) + (center_dy * center_dy)
         area = cand["w"] * cand["h"]
-        key = (-int(cand["score"] * 100), center_d2, -area)
+        if is_live_target(player_target):
+            player_dx = abs(cand["cx"] - player_target["cx"])
+            player_dy = abs(cand["cy"] - player_target["cy"])
+            player_d = player_dx + player_dy
+        else:
+            player_d = 0
+        key = (-int(cand["score"] * 100), player_d, center_d2, -area)
         if (best_key is None) or (key < best_key):
             best_key = key
             best = cand
@@ -760,63 +967,43 @@ def uart_write_line(line):
         sys.print_exception(err)
 
 
-def send_target_packet(target, mode_name, state_name):
-    if target is None:
-        return
+def choose_uart_ball_target(mode_name, tennis_candidates, active_target):
+    if mode_name == "PLAY":
+        return None
 
-    ensure_target_id(target)
-    payload = (
-        '{"type":"target","kind":"%s","id":%d,"g_id":"%s","distance_cm":%.1f,"mode":"%s","state":"%s"}'
-        % (
-            target.get("kind", "unknown").lower(),
-            int(target.get("id", 0)),
-            format_grid_id(target.get("row"), target.get("col")),
-            target_distance_cm(target),
-            mode_name,
-            state_name,
-        )
-    )
-    uart_write_line(payload)
+    nearest_target = choose_nearest_tennis(tennis_candidates)
+    if nearest_target is not None:
+        return nearest_target
+
+    if is_live_target(active_target) and active_target.get("kind") == "tennis":
+        return active_target
+
+    return None
 
 
-def send_command_packet(cmd_name, target, mode_name, state_name):
-    target_id = 0
-    g_id = "(?,?)"
+def send_runtime_packets(mode_name, target):
+    row = -1
+    col = -1
     distance_cm = 0.0
-    kind = "none"
 
-    if target is not None:
-        ensure_target_id(target)
-        target_id = int(target.get("id", 0))
-        g_id = format_grid_id(target.get("row"), target.get("col"))
+    if is_live_target(target) and target.get("kind") == "tennis":
+        row = int(target.get("row", -1))
+        col = int(target.get("col", -1))
         distance_cm = target_distance_cm(target)
-        kind = target.get("kind", "unknown").lower()
 
-    payload = (
-        '{"type":"event","cmd":"%s","kind":"%s","id":%d,"g_id":"%s","distance_cm":%.1f,"mode":"%s","state":"%s"}'
-        % (
-            cmd_name,
-            kind,
-            target_id,
-            g_id,
-            distance_cm,
-            mode_name,
-            state_name,
-        )
-    )
-    uart_write_line(payload)
+    uart_write_line("%s,%d,%d,%.1f" % (mode_name, row, col, distance_cm))
 
 
-def send_runtime_packets(mode_name, state_name, active_target, player_target, racket_target):
-    if mode_name != "PLAY":
-        if active_target is not None and active_target.get("miss", 0) == 0:
-            send_target_packet(active_target, mode_name, state_name)
-        return
-
-    if player_target is not None and player_target.get("miss", 0) == 0:
-        send_target_packet(player_target, mode_name, state_name)
-    if racket_target is not None:
-        send_target_packet(racket_target, mode_name, state_name)
+def send_command_packet(cmd, arg, mode_name, state_name):
+    """简单的命令封装发送，避免未定义时崩溃。"""
+    try:
+        if uart is None:
+            return
+        # 格式：CMD,ARG,MODE,STATE
+        line = "%s,%s,%s,%s" % (str(cmd), str(arg), str(mode_name), str(state_name))
+        uart_write_line(line)
+    except Exception:
+        pass
 
 
 def age_and_prune_tracks():
@@ -1465,14 +1652,20 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
     global scan_empty_rounds, player_lock_start_ms
 
     command_event = None
-    racket_target = choose_racket_target(racket_candidates)
-    racket_present = racket_target is not None
+    racket_target = choose_racket_target(racket_candidates, player_target)
+    racket_visible = racket_target is not None
+    if is_live_target(player_target) and racket_visible:
+        play_ready_frames += 1
+    else:
+        play_ready_frames = 0
+    racket_present = play_ready_frames >= PLAY_RACKET_CONFIRM_FRAMES
     if racket_present:
         if current_racket_id <= 0:
             current_racket_id = allocate_target_id()
         ensure_target_id(racket_target, current_racket_id)
     else:
         current_racket_id = 0
+        racket_target = None
     nearest_tennis = choose_nearest_tennis(tennis_candidates)
     active_target = tennis_target
     now_ms = time.ticks_ms()
@@ -1572,7 +1765,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
         return active_target, "SEEK", "TRACK", racket_present, racket_target, command_event
 
     active_target = player_target
-    if player_target is not None and player_target.get("miss", 0) == 0:
+    if is_live_target(player_target):
         player_locked = True
         if racket_present and player_lock_start_ms <= 0:
             player_lock_start_ms = now_ms
@@ -1595,9 +1788,26 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
 
 
 def draw_status_panel(img, fps, mode_name, state_name, racket_present):
-    global servo_init_frames_remaining, pick_confirm_start_ms, pick_track_start_ms
+    global servo_init_frames_remaining, pick_confirm_start_ms, pick_track_start_ms, comm_state
 
-    img.draw_string(2, 2, "FOMO OK", color=YELLOW, mono_space=False)
+    # 显示通信状态：no link / linked / ok
+    try:
+        if comm_state == COMM_NO_LINK:
+            status_text = "no link"
+            status_color = RED
+        elif comm_state == COMM_LINKED:
+            status_text = "linked"
+            status_color = YELLOW
+        elif comm_state == COMM_OK:
+            status_text = "ok"
+            status_color = GREEN
+        else:
+            status_text = "?"
+            status_color = YELLOW
+    except Exception:
+        status_text = "?"
+        status_color = YELLOW
+    img.draw_string(2, 2, status_text, color=status_color, mono_space=False)
     img.draw_string(2, 20, "%.2f fps" % fps, color=WHITE, mono_space=False)
     img.draw_string(2, 38, "mode:%s" % mode_name, color=YELLOW, mono_space=False)
     img.draw_string(
@@ -1800,7 +2010,7 @@ def fomo_post_process(model, inputs, outputs):
 
 
 def boot():
-    global labels, net
+    global labels, net, last_hello_ms
 
     try:
         init_camera()
@@ -1835,6 +2045,16 @@ def boot():
     print("Model output shape:", net.output_shape)
     print("Labels:", labels)
     init_uart()
+    # 启动阶段先发送一次 hello，之后由 try_send_hello 在主循环按周期发送
+    try:
+        if uart is not None:
+            uart_write_line("hello")
+            try:
+                last_hello_ms = time.ticks_ms()
+            except Exception:
+                pass
+    except Exception:
+        pass
     init_picker_feedback()
     if ENABLE_SERVOS:
         try:
@@ -1855,6 +2075,9 @@ def main_loop():
         clock.tick()
         try:
             frame_index += 1
+            # 处理 UART 接收并尝试非阻塞发送 hello（不影响主循环）
+            process_uart_rx()
+            try_send_hello()
             img = sensor.snapshot()
             draw_grid(img, GRID_ROWS, GRID_COLS, GRID_COLOR)
             predictions = net.predict([img], callback=fomo_post_process)
@@ -1972,7 +2195,7 @@ def main_loop():
             draw_active_target(img, active_target)
             draw_status_panel(img, clock.fps(), mode_name, state_name, racket_present)
             draw_player_countdown(img, mode_name, racket_present)
-            send_runtime_packets(mode_name, state_name, active_target, player_target, racket_target)
+            send_runtime_packets(mode_name, active_target)
             if command_event is not None:
                 send_command_packet(command_event[0], command_event[1], mode_name, state_name)
             display_frame(img)
