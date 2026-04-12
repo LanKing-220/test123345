@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
 import tensorflow as tf
 
 try:
@@ -18,9 +19,11 @@ try:
         derive_stage_filters,
         export_tflite_models,
         load_dataset,
+        make_fg_f1_metric,
         make_fg_precision_metric,
         make_fg_recall_metric,
         oversample_focus_classes,
+        recommend_fg_thresholds,
         save_training_artifacts,
         validate_grid_layout,
     )
@@ -33,9 +36,11 @@ except ImportError:
         derive_stage_filters,
         export_tflite_models,
         load_dataset,
+        make_fg_f1_metric,
         make_fg_precision_metric,
         make_fg_recall_metric,
         oversample_focus_classes,
+        recommend_fg_thresholds,
         save_training_artifacts,
         validate_grid_layout,
     )
@@ -56,7 +61,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bg-weight", type=float, default=0.25)
     parser.add_argument("--fg-weight", type=float, default=2.0)
     parser.add_argument("--focal-gamma", type=float, default=2.0)
-    parser.add_argument("--metric-threshold", type=float, default=0.35)
+    parser.add_argument("--metric-threshold", type=float, default=0.50)
     parser.add_argument("--label-mode", type=str, choices=["point", "soft-box"], default="soft-box")
     parser.add_argument("--bbox-radius-scale", type=float, default=0.25)
     parser.add_argument("--min-target-radius", type=int, default=0)
@@ -71,16 +76,105 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-class-weight", action="store_true")
     parser.add_argument("--min-class-weight", type=float, default=0.75)
     parser.add_argument("--max-class-weight", type=float, default=4.0)
+    parser.add_argument("--metric-gt-threshold", type=float, default=None)
+    parser.add_argument(
+        "--monitor",
+        type=str,
+        choices=["val_loss", "val_fg_precision", "val_fg_recall", "val_fg_f1"],
+        default="val_fg_f1",
+    )
+    parser.add_argument("--early-stop-patience", type=int, default=16)
+    parser.add_argument("--early-stop-start-epoch", type=int, default=8)
+    parser.add_argument("--early-stop-min-delta", type=float, default=1e-4)
+    parser.add_argument("--reduce-lr-patience", type=int, default=5)
+    parser.add_argument("--reduce-lr-factor", type=float, default=0.5)
+    parser.add_argument("--min-lr", type=float, default=1e-5)
+    parser.add_argument("--threshold-search-min", type=float, default=0.20)
+    parser.add_argument("--threshold-search-max", type=float, default=0.80)
+    parser.add_argument("--threshold-search-step", type=float, default=0.05)
     parser.add_argument("--focus-classes", type=str, default="")
     parser.add_argument("--focus-multiplier", type=int, default=1)
     parser.add_argument("--save-h5", action="store_true")
     parser.add_argument("--skip-tflite", action="store_true")
     parser.add_argument("--out-dir", type=str, default="fomoPy/outputs/fomo_local")
+    parser.add_argument("--no-early-stop", action="store_true", help="Disable EarlyStopping callback")
     return parser
 
 
+def infer_metric_gt_threshold(args: argparse.Namespace) -> float:
+    if args.metric_gt_threshold is not None:
+        return float(args.metric_gt_threshold)
+    return 0.99 if args.label_mode == "soft-box" else 0.5
+
+
+def build_threshold_search_values(args: argparse.Namespace) -> np.ndarray:
+    if args.threshold_search_step <= 0:
+        raise ValueError("threshold_search_step must be > 0")
+    if args.threshold_search_max < args.threshold_search_min:
+        raise ValueError("threshold_search_max must be >= threshold_search_min")
+
+    values = np.arange(
+        args.threshold_search_min,
+        args.threshold_search_max + args.threshold_search_step * 0.5,
+        args.threshold_search_step,
+        dtype=np.float32,
+    )
+    values = np.unique(np.clip(values, 1e-3, 0.999))
+    if values.size == 0:
+        raise ValueError("threshold search range produced no values")
+    return values
+
+
+def summarize_empty_images(y: np.ndarray, gt_threshold: float) -> tuple[int, int]:
+    has_fg = np.any(y[..., 1:] >= float(gt_threshold), axis=(1, 2, 3))
+    empty = int(np.sum(~has_fg))
+    return empty, int(y.shape[0])
+
+
+def resolve_output_dir(workspace: Path, out_dir_text: str) -> Path:
+    out_dir = Path(out_dir_text)
+    if out_dir.is_absolute():
+        return out_dir
+    if workspace.name == "fomoPy" and out_dir.parts and out_dir.parts[0] == workspace.name:
+        return (workspace.parent / out_dir).resolve()
+    return (workspace / out_dir).resolve()
+
+
 def load_training_data(args: argparse.Namespace, workspace: Path):
-    dataset = resolve_dataset_layout(workspace, workspace / args.data_yaml, workspace / args.labels_dir)
+    # Resolve paths for data_yaml and labels_dir robustly to avoid duplicating
+    # the `fomoPy` segment when running from inside the `fomoPy` folder.
+    data_yaml_path = Path(args.data_yaml)
+    labels_dir_path = Path(args.labels_dir)
+
+    if not data_yaml_path.is_absolute():
+        candidates = [
+            workspace / data_yaml_path,
+            workspace.parent / data_yaml_path,
+            Path.cwd() / data_yaml_path,
+            Path(__file__).resolve().parent / data_yaml_path,
+        ]
+        for c in candidates:
+            if c.exists():
+                data_yaml_path = c
+                break
+        else:
+            data_yaml_path = (workspace / data_yaml_path)
+
+    if not labels_dir_path.is_absolute():
+        candidates = [
+            workspace / labels_dir_path,
+            workspace.parent / labels_dir_path,
+            Path.cwd() / labels_dir_path,
+            Path(__file__).resolve().parent / labels_dir_path,
+        ]
+        for c in candidates:
+            if c.exists():
+                labels_dir_path = c
+                break
+        else:
+            labels_dir_path = (workspace / labels_dir_path)
+
+    dataset = resolve_dataset_layout(workspace, data_yaml_path, labels_dir_path)
 
     x_train, y_train = load_dataset(
         dataset.train_img_dir,
@@ -138,6 +232,8 @@ def save_outputs(
     history,
     class_names,
     stage_filters,
+    metric_gt_threshold: float,
+    threshold_report,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     save_training_artifacts(
@@ -165,8 +261,16 @@ def save_outputs(
     config_payload = vars(args).copy()
     config_payload["stage_filters"] = [int(v) for v in stage_filters]
     config_payload["classes"] = list(class_names)
+    config_payload["metric_gt_threshold"] = float(metric_gt_threshold)
+    config_payload["recommended_threshold"] = float(threshold_report["global"]["threshold"])
+    config_payload["recommended_class_thresholds"] = [
+        float(v) for v in threshold_report["per_class"]["thresholds"]
+    ]
     config_path = out_dir / "config.json"
     config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    threshold_path = out_dir / "threshold_recommendations.json"
+    threshold_path.write_text(json.dumps(threshold_report, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print("Saved:")
     print(f"  {keras_path}")
@@ -180,6 +284,7 @@ def save_outputs(
     print(f"  {labels_path}")
     print(f"  {out_dir / 'training_history.json'}")
     print(f"  {config_path}")
+    print(f"  {threshold_path}")
     print(f"  {(workspace / 'img' / 'train_loss_curve.png').resolve()}")
 
 
@@ -193,6 +298,17 @@ def main() -> None:
     print(f"Train samples after augmentation: {x_train.shape[0]}")
     print(f"Grid layout: image={args.image_size}, grid={args.grid_size}, downsample_steps={downsample_steps}")
     print(f"Label mode: {args.label_mode}, bbox_radius_scale={args.bbox_radius_scale}")
+
+    metric_gt_threshold = infer_metric_gt_threshold(args)
+    train_empty, train_total = summarize_empty_images(y_train, gt_threshold=metric_gt_threshold)
+    val_empty, val_total = summarize_empty_images(y_val, gt_threshold=metric_gt_threshold)
+    print(f"Metric ground-truth threshold: {metric_gt_threshold:.2f}")
+    print(f"Empty images under metric view: train={train_empty}/{train_total}, val={val_empty}/{val_total}")
+    if train_empty == 0 and val_empty > 0:
+        print(
+            "Warning: validation/test contains empty frames but training does not. "
+            "Precision will stay hard to improve until negative-only images are added to training."
+        )
 
     fg_channel_weights = None
     if args.auto_class_weight:
@@ -214,6 +330,9 @@ def main() -> None:
         refine_blocks=args.refine_blocks,
         dropout_rate=args.dropout_rate,
     )
+    precision_metric = make_fg_precision_metric(args.metric_threshold, gt_threshold=metric_gt_threshold)
+    recall_metric = make_fg_recall_metric(args.metric_threshold, gt_threshold=metric_gt_threshold)
+    f1_metric = make_fg_f1_metric(args.metric_threshold, gt_threshold=metric_gt_threshold)
     model.compile(
         optimizer=build_optimizer(args),
         loss=build_fomo_focal_loss(
@@ -225,15 +344,46 @@ def main() -> None:
         ),
         metrics=[
             tf.keras.metrics.BinaryAccuracy(name="bin_acc"),
-            make_fg_precision_metric(args.metric_threshold),
-            make_fg_recall_metric(args.metric_threshold),
+            precision_metric,
+            recall_metric,
+            f1_metric,
         ],
     )
 
-    callbacks = [
-        tf.keras.callbacks.EarlyStopping(monitor="val_loss", patience=12, restore_best_weights=True),
-        tf.keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=4),
-    ]
+    monitor_lookup = {
+        "val_loss": "val_loss",
+        "val_fg_precision": f"val_{precision_metric.name}",
+        "val_fg_recall": f"val_{recall_metric.name}",
+        "val_fg_f1": f"val_{f1_metric.name}",
+    }
+    monitor_name = monitor_lookup[args.monitor]
+    monitor_mode = "min" if args.monitor == "val_loss" else "max"
+    print(f"Callbacks monitor: {monitor_name} ({monitor_mode})")
+
+    callbacks = []
+    callbacks.append(
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor=monitor_name,
+            mode=monitor_mode,
+            factor=args.reduce_lr_factor,
+            patience=args.reduce_lr_patience,
+            min_delta=args.early_stop_min_delta,
+            min_lr=args.min_lr,
+            verbose=1,
+        )
+    )
+    if not args.no_early_stop:
+        callbacks.append(
+            tf.keras.callbacks.EarlyStopping(
+                monitor=monitor_name,
+                mode=monitor_mode,
+                patience=args.early_stop_patience,
+                min_delta=args.early_stop_min_delta,
+                start_from_epoch=args.early_stop_start_epoch,
+                restore_best_weights=True,
+                verbose=1,
+            )
+        )
 
     history = model.fit(
         x_train,
@@ -245,15 +395,46 @@ def main() -> None:
         verbose=2,
     )
 
+    threshold_report = recommend_fg_thresholds(
+        y_true=y_val,
+        y_pred=model.predict(x_val, batch_size=args.batch_size, verbose=0),
+        thresholds=build_threshold_search_values(args),
+        gt_threshold=metric_gt_threshold,
+        class_names=dataset.class_names,
+    )
+
+    print("Validation threshold calibration:")
+    print(
+        "  Global threshold="
+        f"{threshold_report['global']['threshold']:.2f} "
+        f"prec={threshold_report['global']['precision']:.4f} "
+        f"rec={threshold_report['global']['recall']:.4f} "
+        f"f1={threshold_report['global']['f1']:.4f}"
+    )
+    print("  Per-class thresholds:")
+    for row in threshold_report["per_class"]["rows"]:
+        print(
+            f"    {row['class_name']}: thr={row['threshold']:.2f} "
+            f"prec={row['precision']:.4f} rec={row['recall']:.4f} f1={row['f1']:.4f}"
+        )
+    print(
+        "  Combined per-class:"
+        f" prec={threshold_report['per_class']['overall']['precision']:.4f}"
+        f" rec={threshold_report['per_class']['overall']['recall']:.4f}"
+        f" f1={threshold_report['per_class']['overall']['f1']:.4f}"
+    )
+
     save_outputs(
         args=args,
         workspace=workspace,
-        out_dir=(workspace / args.out_dir).resolve(),
+        out_dir=resolve_output_dir(workspace, args.out_dir),
         model=model,
         x_train=x_train,
         history=history,
         class_names=dataset.class_names,
         stage_filters=stage_filters,
+        metric_gt_threshold=metric_gt_threshold,
+        threshold_report=threshold_report,
     )
 
 

@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import matplotlib
@@ -280,30 +280,214 @@ def build_fomo_focal_loss(
     return _loss
 
 
-def make_fg_precision_metric(threshold: float):
-    def _metric(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        y_true_fg = tf.cast(y_true[..., 1:] >= 0.5, tf.float32)
-        y_pred_fg = tf.cast(y_pred[..., 1:] >= threshold, tf.float32)
-        tp = tf.reduce_sum(y_pred_fg * y_true_fg)
-        fp = tf.reduce_sum(y_pred_fg * (1.0 - y_true_fg))
-        return tp / (tp + fp + 1e-6)
-
-    metric_tag = int(round(threshold * 100))
-    _metric.__name__ = f"fg_precision_t{metric_tag:02d}"
-    return _metric
+def _metric_name(prefix: str, threshold: float, gt_threshold: float) -> str:
+    threshold_tag = int(round(float(threshold) * 100))
+    gt_tag = int(round(float(gt_threshold) * 100))
+    return f"{prefix}_t{threshold_tag:02d}_g{gt_tag:02d}"
 
 
-def make_fg_recall_metric(threshold: float):
-    def _metric(y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        y_true_fg = tf.cast(y_true[..., 1:] >= 0.5, tf.float32)
-        y_pred_fg = tf.cast(y_pred[..., 1:] >= threshold, tf.float32)
-        tp = tf.reduce_sum(y_pred_fg * y_true_fg)
-        fn = tf.reduce_sum((1.0 - y_pred_fg) * y_true_fg)
-        return tp / (tp + fn + 1e-6)
+@tf.keras.utils.register_keras_serializable(package="fomo")
+class ForegroundPrecisionMetric(tf.keras.metrics.Metric):
+    def __init__(self, threshold: float, gt_threshold: float = 0.5, name: Optional[str] = None, **kwargs):
+        metric_name = name or _metric_name("fg_precision", threshold, gt_threshold)
+        super().__init__(name=metric_name, **kwargs)
+        self.threshold = float(threshold)
+        self.gt_threshold = float(gt_threshold)
+        self.tp = self.add_weight(name="tp", initializer="zeros")
+        self.fp = self.add_weight(name="fp", initializer="zeros")
 
-    metric_tag = int(round(threshold * 100))
-    _metric.__name__ = f"fg_recall_t{metric_tag:02d}"
-    return _metric
+    def update_state(self, y_true: tf.Tensor, y_pred: tf.Tensor, sample_weight=None):
+        y_true_fg = tf.cast(y_true[..., 1:] >= self.gt_threshold, self.dtype)
+        y_pred_fg = tf.cast(y_pred[..., 1:] >= self.threshold, self.dtype)
+        self.tp.assign_add(tf.reduce_sum(y_pred_fg * y_true_fg))
+        self.fp.assign_add(tf.reduce_sum(y_pred_fg * (1.0 - y_true_fg)))
+
+    def result(self) -> tf.Tensor:
+        return self.tp / (self.tp + self.fp + tf.cast(1e-6, self.dtype))
+
+    def reset_state(self) -> None:
+        self.tp.assign(0.0)
+        self.fp.assign(0.0)
+
+    def get_config(self) -> Dict[str, float]:
+        config = super().get_config()
+        config.update({"threshold": self.threshold, "gt_threshold": self.gt_threshold})
+        return config
+
+
+@tf.keras.utils.register_keras_serializable(package="fomo")
+class ForegroundRecallMetric(tf.keras.metrics.Metric):
+    def __init__(self, threshold: float, gt_threshold: float = 0.5, name: Optional[str] = None, **kwargs):
+        metric_name = name or _metric_name("fg_recall", threshold, gt_threshold)
+        super().__init__(name=metric_name, **kwargs)
+        self.threshold = float(threshold)
+        self.gt_threshold = float(gt_threshold)
+        self.tp = self.add_weight(name="tp", initializer="zeros")
+        self.fn = self.add_weight(name="fn", initializer="zeros")
+
+    def update_state(self, y_true: tf.Tensor, y_pred: tf.Tensor, sample_weight=None):
+        y_true_fg = tf.cast(y_true[..., 1:] >= self.gt_threshold, self.dtype)
+        y_pred_fg = tf.cast(y_pred[..., 1:] >= self.threshold, self.dtype)
+        self.tp.assign_add(tf.reduce_sum(y_pred_fg * y_true_fg))
+        self.fn.assign_add(tf.reduce_sum((1.0 - y_pred_fg) * y_true_fg))
+
+    def result(self) -> tf.Tensor:
+        return self.tp / (self.tp + self.fn + tf.cast(1e-6, self.dtype))
+
+    def reset_state(self) -> None:
+        self.tp.assign(0.0)
+        self.fn.assign(0.0)
+
+    def get_config(self) -> Dict[str, float]:
+        config = super().get_config()
+        config.update({"threshold": self.threshold, "gt_threshold": self.gt_threshold})
+        return config
+
+
+@tf.keras.utils.register_keras_serializable(package="fomo")
+class ForegroundF1Metric(tf.keras.metrics.Metric):
+    def __init__(self, threshold: float, gt_threshold: float = 0.5, name: Optional[str] = None, **kwargs):
+        metric_name = name or _metric_name("fg_f1", threshold, gt_threshold)
+        super().__init__(name=metric_name, **kwargs)
+        self.threshold = float(threshold)
+        self.gt_threshold = float(gt_threshold)
+        self.tp = self.add_weight(name="tp", initializer="zeros")
+        self.fp = self.add_weight(name="fp", initializer="zeros")
+        self.fn = self.add_weight(name="fn", initializer="zeros")
+
+    def update_state(self, y_true: tf.Tensor, y_pred: tf.Tensor, sample_weight=None):
+        y_true_fg = tf.cast(y_true[..., 1:] >= self.gt_threshold, self.dtype)
+        y_pred_fg = tf.cast(y_pred[..., 1:] >= self.threshold, self.dtype)
+        self.tp.assign_add(tf.reduce_sum(y_pred_fg * y_true_fg))
+        self.fp.assign_add(tf.reduce_sum(y_pred_fg * (1.0 - y_true_fg)))
+        self.fn.assign_add(tf.reduce_sum((1.0 - y_pred_fg) * y_true_fg))
+
+    def result(self) -> tf.Tensor:
+        precision = self.tp / (self.tp + self.fp + tf.cast(1e-6, self.dtype))
+        recall = self.tp / (self.tp + self.fn + tf.cast(1e-6, self.dtype))
+        return 2.0 * precision * recall / (precision + recall + tf.cast(1e-6, self.dtype))
+
+    def reset_state(self) -> None:
+        self.tp.assign(0.0)
+        self.fp.assign(0.0)
+        self.fn.assign(0.0)
+
+    def get_config(self) -> Dict[str, float]:
+        config = super().get_config()
+        config.update({"threshold": self.threshold, "gt_threshold": self.gt_threshold})
+        return config
+
+
+def make_fg_precision_metric(threshold: float, gt_threshold: float = 0.5):
+    return ForegroundPrecisionMetric(threshold=threshold, gt_threshold=gt_threshold)
+
+
+def make_fg_recall_metric(threshold: float, gt_threshold: float = 0.5):
+    return ForegroundRecallMetric(threshold=threshold, gt_threshold=gt_threshold)
+
+
+def make_fg_f1_metric(threshold: float, gt_threshold: float = 0.5):
+    return ForegroundF1Metric(threshold=threshold, gt_threshold=gt_threshold)
+
+
+def compute_fg_binary_metrics(y_true_fg: np.ndarray, y_pred_fg: np.ndarray) -> Dict[str, float]:
+    y_true_fg = np.asarray(y_true_fg, dtype=np.uint8)
+    y_pred_fg = np.asarray(y_pred_fg, dtype=np.uint8)
+
+    tp = int(np.sum((y_true_fg == 1) & (y_pred_fg == 1)))
+    fp = int(np.sum((y_true_fg == 0) & (y_pred_fg == 1)))
+    fn = int(np.sum((y_true_fg == 1) & (y_pred_fg == 0)))
+    tn = int(np.sum((y_true_fg == 0) & (y_pred_fg == 0)))
+
+    precision = tp / (tp + fp + 1e-9)
+    recall = tp / (tp + fn + 1e-9)
+    f1 = 2.0 * precision * recall / (precision + recall + 1e-9)
+    accuracy = (tp + tn) / (tp + tn + fp + fn + 1e-9)
+
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "tn": tn,
+        "precision": float(precision),
+        "recall": float(recall),
+        "f1": float(f1),
+        "accuracy": float(accuracy),
+    }
+
+
+def _is_better_metric(candidate: Dict[str, float], incumbent: Optional[Dict[str, float]]) -> bool:
+    if incumbent is None:
+        return True
+
+    candidate_key = (candidate["f1"], candidate["precision"], candidate["recall"])
+    incumbent_key = (incumbent["f1"], incumbent["precision"], incumbent["recall"])
+    return candidate_key > incumbent_key
+
+
+def recommend_fg_thresholds(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    thresholds: Sequence[float],
+    gt_threshold: float,
+    class_names: Sequence[str],
+) -> Dict[str, object]:
+    threshold_values = np.asarray(sorted({float(v) for v in thresholds}), dtype=np.float32)
+    if threshold_values.size == 0:
+        raise ValueError("thresholds must contain at least one value")
+
+    fg_true = (np.asarray(y_true[..., 1:]) >= float(gt_threshold)).astype(np.uint8)
+    fg_scores = np.asarray(y_pred[..., 1:], dtype=np.float32)
+
+    if fg_true.shape != fg_scores.shape:
+        raise ValueError(f"shape mismatch between y_true fg {fg_true.shape} and y_pred fg {fg_scores.shape}")
+
+    best_global_threshold = None
+    best_global_metrics = None
+    for thr in threshold_values:
+        pred = (fg_scores >= thr).astype(np.uint8)
+        metrics = compute_fg_binary_metrics(fg_true, pred)
+        if _is_better_metric(metrics, best_global_metrics):
+            best_global_threshold = float(thr)
+            best_global_metrics = metrics
+
+    per_class_thresholds: List[float] = []
+    per_class_rows: List[Dict[str, object]] = []
+    for class_idx, class_name in enumerate(class_names):
+        best_threshold = None
+        best_metrics = None
+        class_true = fg_true[..., class_idx]
+        class_scores = fg_scores[..., class_idx]
+        for thr in threshold_values:
+            pred = (class_scores >= thr).astype(np.uint8)
+            metrics = compute_fg_binary_metrics(class_true, pred)
+            if _is_better_metric(metrics, best_metrics):
+                best_threshold = float(thr)
+                best_metrics = metrics
+
+        per_class_thresholds.append(best_threshold)
+        row = dict(best_metrics)
+        row["class_name"] = class_name
+        row["threshold"] = best_threshold
+        per_class_rows.append(row)
+
+    per_class_thresholds_np = np.asarray(per_class_thresholds, dtype=np.float32).reshape((1, 1, 1, -1))
+    per_class_pred = (fg_scores >= per_class_thresholds_np).astype(np.uint8)
+    per_class_overall = compute_fg_binary_metrics(fg_true, per_class_pred)
+
+    return {
+        "metric_gt_threshold": float(gt_threshold),
+        "search_thresholds": [float(v) for v in threshold_values.tolist()],
+        "global": {
+            "threshold": float(best_global_threshold),
+            **best_global_metrics,
+        },
+        "per_class": {
+            "thresholds": [float(v) for v in per_class_thresholds],
+            "overall": per_class_overall,
+            "rows": per_class_rows,
+        },
+    }
 
 
 def augment_photometric(

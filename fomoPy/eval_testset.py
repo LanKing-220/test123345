@@ -277,11 +277,30 @@ def main() -> None:
     args = parser.parse_args()
 
     workspace = Path.cwd()
-    model_path = workspace / args.model
-    data_yaml = workspace / args.data_yaml
-    labels_root = workspace / args.labels_dir
-    report_path = workspace / args.report
+
+    # Resolve model, data_yaml, labels_root and report paths robustly to
+    # avoid duplicated segments when running from inside `fomoPy`.
+    def resolve_candidates(p: str) -> Path:
+        p_path = Path(p)
+        if p_path.is_absolute():
+            return p_path
+        candidates = [
+            workspace / p_path,
+            workspace.parent / p_path,
+            Path.cwd() / p_path,
+            Path(__file__).resolve().parent / p_path,
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+        return (workspace / p_path)
+
+    model_path = resolve_candidates(args.model)
+    data_yaml = resolve_candidates(args.data_yaml)
+    labels_root = resolve_candidates(args.labels_dir)
+    report_path = resolve_candidates(args.report)
     report_path.parent.mkdir(parents=True, exist_ok=True)
+
     dataset = resolve_dataset_layout(workspace, data_yaml, labels_root)
 
     train_img_dir = dataset.train_img_dir

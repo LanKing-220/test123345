@@ -1,0 +1,106 @@
+{
+  "model": "D:\\副桌面文件夹\\论文\\fomo\\fomoPy\\fomoPy\\outputs\\fomo_local\\fomo_like_int8.tflite",
+  "model_format": "tflite",
+  "threshold": 0.5,
+  "class_thresholds": null,
+  "label_mode": "point",
+  "bbox_radius_scale": 0.25,
+  "gt_positive_threshold": 0.05,
+  "metric_note": "accuracy is grid-cell accuracy; precision/recall/f1 are usually more meaningful for FOMO-style detection",
+  "train": {
+    "num_images": 1103,
+    "overall": {
+      "tp": 1331,
+      "fp": 11014,
+      "fn": 72,
+      "tn": 464079,
+      "precision": 0.10781692993113748,
+      "recall": 0.9486813970057386,
+      "f1": 0.19362816391329415,
+      "accuracy": 0.9767343272556308
+    },
+    "per_class": [
+      {
+        "tp": 590,
+        "fp": 3682,
+        "fn": 55,
+        "tn": 154505,
+        "precision": 0.1381086142321774,
+        "recall": 0.9147286821691245,
+        "f1": 0.2399837296885782,
+        "accuracy": 0.9764719955676378,
+        "class_name": "Tennis"
+      },
+      {
+        "tp": 367,
+        "fp": 3421,
+        "fn": 12,
+        "tn": 155032,
+        "precision": 0.09688489968318456,
+        "recall": 0.9683377308681574,
+        "f1": 0.17614590816188863,
+        "accuracy": 0.9783859675632054,
+        "class_name": "Tennis player"
+      },
+      {
+        "tp": 374,
+        "fp": 3911,
+        "fn": 5,
+        "tn": 154542,
+        "precision": 0.08728121353556889,
+        "recall": 0.9868073878601932,
+        "f1": 0.16037735834118244,
+        "accuracy": 0.9753450186360371,
+        "class_name": "Tennis racket"
+      }
+    ]
+  },
+  "test": {
+    "num_images": 289,
+    "overall": {
+      "tp": 180,
+      "fp": 2978,
+      "fn": 73,
+      "tn": 121617,
+      "precision": 0.05699810006331318,
+      "recall": 0.7114624505900733,
+      "f1": 0.10554089696022277,
+      "accuracy": 0.9755622837370164
+    },
+    "per_class": [
+      {
+        "tp": 124,
+        "fp": 934,
+        "fn": 32,
+        "tn": 40526,
+        "precision": 0.11720226843089111,
+        "recall": 0.7948717948666996,
+        "f1": 0.20428336056646104,
+        "accuracy": 0.9767877739330793,
+        "class_name": "Tennis"
+      },
+      {
+        "tp": 40,
+        "fp": 892,
+        "fn": 17,
+        "tn": 40667,
+        "precision": 0.04291845493557627,
+        "recall": 0.7017543859526009,
+        "f1": 0.08088978755551922,
+        "accuracy": 0.9781574394463434,
+        "class_name": "Tennis player"
+      },
+      {
+        "tp": 16,
+        "fp": 1152,
+        "fn": 24,
+        "tn": 40424,
+        "precision": 0.013698630136974574,
+        "recall": 0.39999999999,
+        "f1": 0.026490066161089423,
+        "accuracy": 0.97174163783158,
+        "class_name": "Tennis racket"
+      }
+    ]
+  }
+}
