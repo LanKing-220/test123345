@@ -1,3 +1,9 @@
+"""基于 FOMO 热力图的离线推理工具。
+
+提供：模型加载、图片预处理、TFLite 推理、热力图解码以及绘制检测结果的辅助函数。
+用于识别网球运动员与球拍，并在输出图像上标注最优检测框。
+"""
+
 import argparse
 from pathlib import Path
 
@@ -20,6 +26,10 @@ WHITE = (255, 255, 255)
 
 
 def imread_unicode(path: Path):
+    """安全读取图片并返回 BGR numpy 数组，失败返回 None。
+
+    采用 numpy.fromfile + cv2.imdecode 的方式以兼容包含非 ASCII 路径的情况。
+    """
     data = np.fromfile(str(path), dtype=np.uint8)
     if data.size == 0:
         return None
@@ -27,10 +37,19 @@ def imread_unicode(path: Path):
 
 
 def load_labels(path: Path):
+    """从文本文件读取标签，每行一个标签，忽略空行。
+
+    返回字符串列表，顺序与模型输出通道一一对应。
+    """
     return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def load_interpreter(model_path: Path):
+    """加载 TFLite 解释器并分配张量。
+
+    在 Windows 上若模型路径包含非 ASCII 字符，直接按路径加载可能失败，
+    本函数在捕获 ValueError 时回退到按字节内容加载以提高兼容性。
+    """
     try:
         interpreter = tf.lite.Interpreter(model_path=str(model_path))
     except ValueError:
@@ -43,6 +62,10 @@ def load_interpreter(model_path: Path):
 
 
 def resolve_labels_path(model_path: Path, labels_arg):
+    """根据优先级解析标签文件路径：命令行参数 -> 模型同目录 labels.txt -> 脚本默认位置。
+
+    返回 Path 对象（可能不存在，调用者需做存在性检查）。
+    """
     if labels_arg:
         return Path(labels_arg)
 
@@ -54,12 +77,21 @@ def resolve_labels_path(model_path: Path, labels_arg):
 
 
 def preprocess_image(image_bgr: np.ndarray, input_width: int, input_height: int):
+    """将 BGR 图像转换为 RGB、调整到模型输入尺寸并归一化到 [0,1]。
+
+    返回 float32 类型的图像阵列，形状为 (H, W, 3)。
+    """
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     resized = cv2.resize(image_rgb, (input_width, input_height), interpolation=cv2.INTER_AREA)
     return resized.astype(np.float32) / 255.0
 
 
 def run_tflite(interpreter, image_input: np.ndarray):
+    """执行 TFLite 推理并将输出恢复为 float32 热力图。
+
+    - 支持输入/输出量化（int8）的反量化处理。
+    - 返回模型输出的第一个 batch 的 numpy 数组（float32）。
+    """
     input_detail = interpreter.get_input_details()[0]
     output_detail = interpreter.get_output_details()[0]
 
@@ -84,6 +116,11 @@ def run_tflite(interpreter, image_input: np.ndarray):
 
 
 def score_region(roi: np.ndarray, score_mode: str):
+    """对单个连通域区域的热力图值计算置信度分数。
+
+    支持多种策略：`mean`（均值）、`max`（最大值）、`top3`、`top5`。
+    当区域为空时返回 0.0。
+    """
     flat = roi.reshape(-1)
     if flat.size == 0:
         return 0.0
@@ -105,6 +142,13 @@ def decode_fomo(
     heatmap_thresh: float = THRESH_HEATMAP,
     score_mode: str = "mean",
 ):
+    """将模型输出热力图解码为针对每个类别的检测框列表。
+
+    - `output`：形状为 (grid_h, grid_w, num_channels) 的热力图输出
+    - 使用阈值生成二值连通域（connected components），并为每个连通域
+      计算包围盒与置信度分数
+    - 返回格式：List[List[(x, y, w, h, score)]]，坐标为原图像尺度（像素）
+    """
     grid_h, grid_w, num_channels = output.shape
     results = [[] for _ in range(num_channels)]
 
@@ -142,12 +186,18 @@ def decode_fomo(
 
 
 def choose_best_detection(detections):
+    """从若干检测候选中选择最优一项。
+
+    优先比较置信度(score)，在相同置信度下比较检测框面积作为次级指标。
+    返回单个检测元组或 None（无候选）。
+    """
     if not detections:
         return None
     return max(detections, key=lambda item: (item[4], (item[2] * item[3])))
 
 
 def print_heatmap_stats(output: np.ndarray, labels):
+    """打印每个类别热力图的最大值与均值，便于调试与阈值设定。"""
     for class_id in range(output.shape[2]):
         label = labels[class_id] if class_id < len(labels) else f"class_{class_id}"
         channel = output[:, :, class_id]
@@ -158,6 +208,7 @@ def print_heatmap_stats(output: np.ndarray, labels):
 
 
 def draw_player(image_bgr: np.ndarray, det):
+    """在图像上绘制人物检测结果：圆形标记 + 置信度文本。"""
     x, y, w, h, score = det
     cx = x + (w // 2)
     cy = y + (h // 2)
@@ -184,6 +235,7 @@ def draw_player(image_bgr: np.ndarray, det):
 
 
 def draw_racket(image_bgr: np.ndarray, det):
+    """在图像上绘制球拍检测结果：矩形框 + 置信度文本。"""
     x, y, w, h, score = det
     cv2.rectangle(image_bgr, (x, y), (x + w, y + h), RED, 2)
     cv2.putText(

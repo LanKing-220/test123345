@@ -34,6 +34,18 @@ comm_state = COMM_NO_LINK
 last_hello_ms = 0
 HELLO_INTERVAL_MS = 5000
 
+# 主机控制命令：采用 REQ/CONFIRM 二次确认，避免串口噪声误触发。
+# 仅在链路 COMM_OK 且当前状态允许时才会真正执行。
+HOST_CTRL_CONFIRM_TIMEOUT_MS = 3000
+HOST_CTRL_ACTION_UNLOCK_TRACK = "UNLOCK_TRACK"
+HOST_CTRL_ACTION_MODE_PICK = "MODE_PICK"
+HOST_CTRL_ACTION_MODE_PLAY = "MODE_PLAY"
+HOST_CTRL_ACTIONS = (
+    HOST_CTRL_ACTION_UNLOCK_TRACK,
+    HOST_CTRL_ACTION_MODE_PICK,
+    HOST_CTRL_ACTION_MODE_PLAY,
+)
+
 THRESH_TENNIS = 0.35
 # 人和球拍更容易误触发，阈值调高后会更保守，降低敏感度。
 THRESH_PLAYER = 0.75
@@ -109,7 +121,8 @@ PICK_RETURN = 1
 PICK_CONFIRM = 2
 PICK_TRACK = 3
 PLAY_TRACK_PLAYER = 0
-PLAY_WAIT_SERVE = 1
+PLAY_SEARCH_PLAYER = 1
+PLAY_WAIT_SERVE = PLAY_SEARCH_PLAYER
 
 AUTO_SWITCH_TO_PLAY = False
 PLAY_ENTER_CONFIRM_FRAMES = 5
@@ -118,11 +131,8 @@ CAPTURE_DISTANCE_CM = 10.0
 CAPTURE_HOLD_FRAMES = 8
 NEAREST_SWITCH_MARGIN_CM = 6.0
 NEAREST_SWITCH_CONFIRM_FRAMES = 2
-SCAN_EMPTY_ROUNDS_TO_PLAY = 2
 PICK_CONFIRM_DURATION_MS = 2000
-PICK_TRACK_DURATION_MS = 20000
-PLAYER_DETECT_COUNTDOWN_MS = 5000
-COUNTDOWN_FONT_SCALE = 5
+TARGET_LOST_TIMEOUT_MS = 2000
 PLAY_RACKET_CONFIRM_FRAMES = 2
 RACKET_LINK_MARGIN_X_RATIO = 0.60
 RACKET_LINK_MARGIN_Y_RATIO = 0.35
@@ -153,18 +163,22 @@ racket_seen_prev = False
 best_scan_tennis = None
 scan_ranked_tennis = []
 scan_candidate_index = 0
-scan_empty_rounds = 0
-player_lock_start_ms = 0
 servo_init_frames_remaining = 0
 scan_seek_left = True
 pick_confirm_start_ms = 0
-pick_track_start_ms = 0
+last_tennis_seen_ms = 0
+last_player_seen_ms = 0
 picker_feedback_pin = None
 picker_feedback_state = 0
 picker_uart_done_pending = 0
 next_target_id = 1
 current_racket_id = 0
 uart_rx_buffer = ""
+host_ctrl_pending_action = ""
+host_ctrl_pending_token = ""
+host_ctrl_pending_ms = 0
+host_track_unlock_pending = 0
+host_mode_switch_pending = -1
 
 ENABLE_TENNIS_REFINEMENT = True
 HOUGH_INTERVAL = 3
@@ -354,6 +368,106 @@ def parse_uart_event_count(text):
     return 1
 
 
+def host_control_enabled():
+    return comm_state == COMM_OK
+
+
+def host_action_supported(action):
+    return action in HOST_CTRL_ACTIONS
+
+
+def host_action_allowed(action):
+    if action == HOST_CTRL_ACTION_UNLOCK_TRACK:
+        return (mode == MODE_PICK) and (pick_substate == PICK_TRACK)
+    if action == HOST_CTRL_ACTION_MODE_PICK:
+        return mode == MODE_PLAY
+    if action == HOST_CTRL_ACTION_MODE_PLAY:
+        return mode == MODE_PICK
+    return False
+
+
+def clear_host_ctrl_pending():
+    global host_ctrl_pending_action, host_ctrl_pending_token, host_ctrl_pending_ms
+
+    host_ctrl_pending_action = ""
+    host_ctrl_pending_token = ""
+    host_ctrl_pending_ms = 0
+
+
+def consume_host_track_unlock_event():
+    global host_track_unlock_pending
+
+    if host_track_unlock_pending <= 0:
+        return False
+    host_track_unlock_pending -= 1
+    return True
+
+
+def consume_host_mode_switch_event():
+    global host_mode_switch_pending
+
+    mode_to_switch = host_mode_switch_pending
+    host_mode_switch_pending = -1
+    return mode_to_switch
+
+
+def parse_host_ctrl_message(text):
+    global host_ctrl_pending_action, host_ctrl_pending_token, host_ctrl_pending_ms
+    global host_track_unlock_pending, host_mode_switch_pending
+
+    # 协议：CTRL,ACTION,REQ|CONFIRM,TOKEN
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) < 4:
+        return False
+    if parts[0].upper() != "CTRL":
+        return False
+
+    action = parts[1].upper()
+    phase = parts[2].upper()
+    token = parts[3]
+    if (not action) or (not phase) or (not token):
+        return True
+
+    if (not host_control_enabled()) or (not host_action_supported(action)):
+        uart_write_line("NACK,%s,%s,%s" % (action, phase, token))
+        return True
+
+    if phase == "REQ":
+        if not host_action_allowed(action):
+            uart_write_line("NACK,%s,REQ,%s" % (action, token))
+            return True
+        host_ctrl_pending_action = action
+        host_ctrl_pending_token = token
+        host_ctrl_pending_ms = time.ticks_ms()
+        uart_write_line("ACK,%s,REQ,%s" % (action, token))
+        return True
+
+    if phase != "CONFIRM":
+        uart_write_line("NACK,%s,%s,%s" % (action, phase, token))
+        return True
+
+    now_ms = time.ticks_ms()
+    age_ms = time.ticks_diff(now_ms, host_ctrl_pending_ms) if host_ctrl_pending_ms > 0 else -1
+    pending_alive = (host_ctrl_pending_ms > 0) and (age_ms >= 0) and (age_ms <= HOST_CTRL_CONFIRM_TIMEOUT_MS)
+    matched = pending_alive and (action == host_ctrl_pending_action) and (token == host_ctrl_pending_token)
+
+    if matched and host_action_allowed(action):
+        if action == HOST_CTRL_ACTION_UNLOCK_TRACK:
+            host_track_unlock_pending += 1
+        elif action == HOST_CTRL_ACTION_MODE_PICK:
+            host_mode_switch_pending = MODE_PICK
+        elif action == HOST_CTRL_ACTION_MODE_PLAY:
+            host_mode_switch_pending = MODE_PLAY
+        uart_write_line("ACK,%s,CONFIRM,%s" % (action, token))
+        clear_host_ctrl_pending()
+        return True
+
+    uart_write_line("NACK,%s,CONFIRM,%s" % (action, token))
+    if matched or ((host_ctrl_pending_ms > 0) and (not pending_alive)):
+        clear_host_ctrl_pending()
+    return True
+
+
 def handle_uart_line(line):
     global balls_served, balls_picked, picker_uart_done_pending
     global comm_state
@@ -363,6 +477,9 @@ def handle_uart_line(line):
 
     text = line.strip()
     if not text:
+        return
+
+    if parse_host_ctrl_message(text):
         return
 
     upper = text.upper()
@@ -886,6 +1003,12 @@ def is_live_target(target):
     return target is not None and target.get("miss", 0) == 0
 
 
+def target_lost_timeout(last_seen_ms, now_ms):
+    if last_seen_ms <= 0:
+        return True
+    return time.ticks_diff(now_ms, last_seen_ms) >= TARGET_LOST_TIMEOUT_MS
+
+
 def is_racket_linked_to_player(player_target, racket_target):
     if (not is_live_target(player_target)) or racket_target is None:
         return False
@@ -1208,22 +1331,8 @@ def draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates):
 
 
 def draw_player_countdown(img, mode_name, racket_present):
-    if mode_name != "PLAY":
-        return
-    if not player_locked:
-        return
-    if not racket_present:
-        return
-    if player_lock_start_ms <= 0:
-        return
-
-    elapsed_ms = time.ticks_diff(time.ticks_ms(), player_lock_start_ms)
-    remain_ms = PLAYER_DETECT_COUNTDOWN_MS - elapsed_ms
-    remain_s = max(0, (remain_ms + 999) // 1000)
-    text = str(remain_s)
-    text_h = 10 * COUNTDOWN_FONT_SCALE
-    y = max(0, (img.height() - text_h) // 2)
-    draw_centered_text(img, text, y, YELLOW, scale=COUNTDOWN_FONT_SCALE)
+    # 击球模式切回捡球改为由主机显式解锁后，不再显示本地倒计时。
+    return
 
 
 def update_servo_tracking(target, img):
@@ -1411,7 +1520,7 @@ def remember_scan_target(target):
 def begin_scan_round():
     global pick_substate, scan_seek_left, scan_direction, scan_lock_count
     global nearest_switch_count, best_scan_tennis, tracked_tennis
-    global scan_ranked_tennis, scan_candidate_index, pick_confirm_start_ms, pick_track_start_ms
+    global scan_ranked_tennis, scan_candidate_index, pick_confirm_start_ms, last_tennis_seen_ms
 
     pick_substate = PICK_SCAN
     scan_seek_left = True
@@ -1423,7 +1532,7 @@ def begin_scan_round():
     scan_candidate_index = 0
     tracked_tennis = None
     pick_confirm_start_ms = 0
-    pick_track_start_ms = 0
+    last_tennis_seen_ms = 0
 
 
 def update_global_scan(img, nearest_tennis):
@@ -1585,9 +1694,10 @@ def update_scan_motion(img, nearest_tennis):
 def enter_pick_mode():
     global mode, pick_substate, play_substate, capture_cmd, capture_flash_frames
     global player_locked, balls_served, scan_lock_count, nearest_switch_count, play_ready_frames
-    global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player, scan_empty_rounds
+    global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player
     global scan_ranked_tennis, scan_candidate_index
-    global scan_seek_left, pick_confirm_start_ms, pick_track_start_ms, current_racket_id, player_lock_start_ms
+    global scan_seek_left, scan_direction, pick_confirm_start_ms, current_racket_id
+    global last_tennis_seen_ms, last_player_seen_ms
 
     mode = MODE_PICK
     pick_substate = PICK_SCAN
@@ -1603,14 +1713,14 @@ def enter_pick_mode():
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
-    scan_empty_rounds = 0
-    player_lock_start_ms = 0
     tracked_tennis = None
     tracked_player = None
     scan_seek_left = True
+    scan_direction = 1
     pick_confirm_start_ms = 0
-    pick_track_start_ms = 0
     current_racket_id = 0
+    last_tennis_seen_ms = 0
+    last_player_seen_ms = 0
 
 
 def enter_play_mode():
@@ -1618,7 +1728,7 @@ def enter_play_mode():
     global player_locked, balls_served, scan_lock_count, nearest_switch_count, play_ready_frames
     global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player, current_racket_id
     global scan_ranked_tennis, scan_candidate_index
-    global scan_empty_rounds, player_lock_start_ms, pick_confirm_start_ms, pick_track_start_ms
+    global scan_direction, pick_confirm_start_ms, last_tennis_seen_ms, last_player_seen_ms
 
     mode = MODE_PLAY
     pick_substate = PICK_SCAN
@@ -1634,13 +1744,13 @@ def enter_play_mode():
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
-    scan_empty_rounds = 0
-    player_lock_start_ms = 0
+    scan_direction = 1
     pick_confirm_start_ms = 0
-    pick_track_start_ms = 0
     tracked_tennis = None
     tracked_player = None
     current_racket_id = 0
+    last_tennis_seen_ms = 0
+    last_player_seen_ms = 0
 
 
 def run_state_machine(img, tennis_target, tennis_candidates, player_target, racket_candidates):
@@ -1648,8 +1758,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
     global player_locked, balls_served, play_ready_frames, racket_seen_prev
     global scan_lock_count, nearest_switch_count, best_scan_tennis, tracked_tennis
     global scan_ranked_tennis, scan_candidate_index
-    global pick_confirm_start_ms, pick_track_start_ms, current_racket_id
-    global scan_empty_rounds, player_lock_start_ms
+    global pick_confirm_start_ms, current_racket_id, last_tennis_seen_ms, last_player_seen_ms
 
     command_event = None
     racket_target = choose_racket_target(racket_candidates, player_target)
@@ -1669,6 +1778,20 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
     nearest_tennis = choose_nearest_tennis(tennis_candidates)
     active_target = tennis_target
     now_ms = time.ticks_ms()
+    host_ctrl_ok = host_control_enabled()
+    requested_mode = -1
+    host_unlock_track = False
+
+    if host_ctrl_ok:
+        requested_mode = consume_host_mode_switch_event()
+        host_unlock_track = consume_host_track_unlock_event()
+
+    if requested_mode == MODE_PICK and mode != MODE_PICK:
+        enter_pick_mode()
+        return None, "SEEK", "SCAN", False, None, command_event
+    if requested_mode == MODE_PLAY and mode != MODE_PLAY:
+        enter_play_mode()
+        return None, "PLAY", "TRACK_P", False, None, command_event
 
     if capture_flash_frames > 0:
         capture_cmd = 1
@@ -1676,7 +1799,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
     else:
         capture_cmd = 0
 
-    read_picker_feedback()
+    read_picker_feedback(consume=False)
 
     if mode == MODE_PICK:
         if pick_substate == PICK_SCAN:
@@ -1686,16 +1809,10 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
             scan_done = update_global_scan(img, nearest_tennis)
             if scan_done:
                 if len(scan_ranked_tennis) > 0 and select_scan_candidate(0):
-                    scan_empty_rounds = 0
                     tracked_tennis = None
                     pick_confirm_start_ms = 0
-                    pick_track_start_ms = 0
                     pick_substate = PICK_RETURN
                 else:
-                    scan_empty_rounds += 1
-                    if scan_empty_rounds >= SCAN_EMPTY_ROUNDS_TO_PLAY:
-                        enter_play_mode()
-                        return None, "PLAY", "TRACK_P", False, None, command_event
                     begin_scan_round()
             # 扫描阶段只记录候选，不提前锁定或显示跟踪目标。
             return None, "SEEK", "SCAN", racket_present, racket_target, command_event
@@ -1740,46 +1857,51 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
                 ensure_target_id(tracked_tennis, int(confirmed_target.get("id", 0)))
                 tracked_tennis["miss"] = 0
                 pick_confirm_start_ms = 0
-                pick_track_start_ms = now_ms
+                last_tennis_seen_ms = now_ms
                 pick_substate = PICK_TRACK
                 return tracked_tennis, "SEEK", "TRACK", racket_present, racket_target, command_event
 
             return active_target, "SEEK", "CONFIRM", racket_present, racket_target, command_event
 
         active_target = tennis_target if tennis_target is not None else tracked_tennis
-        if active_target is not None and active_target.get("miss", 0) == 0:
+        if is_live_target(active_target):
+            last_tennis_seen_ms = now_ms
             update_servo_tracking(active_target, img)
+        elif target_lost_timeout(last_tennis_seen_ms, now_ms):
+            begin_scan_round()
+            return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
         picker_done = read_picker_feedback()
-        track_timeout = False
-        if pick_track_start_ms > 0:
-            track_timeout = time.ticks_diff(now_ms, pick_track_start_ms) >= PICK_TRACK_DURATION_MS
 
-        if picker_done or track_timeout:
+        if host_ctrl_ok:
+            unlock_pick_track = host_unlock_track
+        else:
+            unlock_pick_track = picker_done
+
+        if unlock_pick_track:
             capture_flash_frames = CAPTURE_HOLD_FRAMES
             capture_cmd = 1
-            scan_empty_rounds = 0
             begin_scan_round()
-            pick_track_start_ms = 0
 
         return active_target, "SEEK", "TRACK", racket_present, racket_target, command_event
 
     active_target = player_target
     if is_live_target(player_target):
         player_locked = True
-        if racket_present and player_lock_start_ms <= 0:
-            player_lock_start_ms = now_ms
-        elif not racket_present:
-            player_lock_start_ms = 0
+        last_player_seen_ms = now_ms
+        play_substate = PLAY_TRACK_PLAYER
         update_servo_tracking(player_target, img)
     else:
         player_locked = False
-        player_lock_start_ms = 0
 
     if not player_locked:
-        play_substate = PLAY_TRACK_PLAYER
         racket_seen_prev = False
         current_racket_id = 0
+        if target_lost_timeout(last_player_seen_ms, now_ms):
+            play_substate = PLAY_SEARCH_PLAYER
+            update_scan_motion(img, None)
+            return None, "PLAY", "SEARCH_P", racket_present, racket_target, command_event
+        play_substate = PLAY_TRACK_PLAYER
         return active_target, "PLAY", "TRACK_P", racket_present, racket_target, command_event
 
     play_substate = PLAY_TRACK_PLAYER
@@ -1788,7 +1910,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
 
 
 def draw_status_panel(img, fps, mode_name, state_name, racket_present):
-    global servo_init_frames_remaining, pick_confirm_start_ms, pick_track_start_ms, comm_state
+    global servo_init_frames_remaining, pick_confirm_start_ms, comm_state
 
     # 显示通信状态：no link / linked / ok
     try:
@@ -1830,10 +1952,12 @@ def draw_status_panel(img, fps, mode_name, state_name, racket_present):
     if servo_init_frames_remaining > 0:
         img.draw_string(2, 182, "servo:init", color=YELLOW, mono_space=False)
     if mode_name == "PLAY":
+        play_state_text = "search" if state_name == "SEARCH_P" else "track"
         img.draw_string(
             2,
             200,
-            "player:%d racket:%d" % (1 if player_locked else 0, 1 if racket_present else 0),
+            "player:%d racket:%d %s"
+            % (1 if player_locked else 0, 1 if racket_present else 0, play_state_text),
             color=WHITE,
             mono_space=False,
         )
@@ -1853,12 +1977,15 @@ def draw_status_panel(img, fps, mode_name, state_name, racket_present):
             color=WHITE,
             mono_space=False,
         )
-    elif state_name == "TRACK" and pick_track_start_ms > 0:
-        remain_s = max(0, (PICK_TRACK_DURATION_MS - time.ticks_diff(time.ticks_ms(), pick_track_start_ms)) // 1000)
+    elif state_name == "TRACK":
+        if host_control_enabled():
+            track_text = "track:host fb:%d" % picker_feedback_state
+        else:
+            track_text = "track:fb:%d" % picker_feedback_state
         img.draw_string(
             2,
             200,
-            "track:%ds fb:%d" % (remain_s, picker_feedback_state),
+            track_text,
             color=WHITE,
             mono_space=False,
         )

@@ -1,3 +1,9 @@
+"""fomoPy 本地数据与图像辅助工具。
+
+包含安全读取图片、YOLO 文件解析、图像路径收集、图像缩放
+以及从 data.yaml 解析数据集布局的工具函数。
+"""
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
@@ -22,6 +28,13 @@ class DatasetLayout:
 
 
 def imread_unicode(path: Path):
+    """安全读取包含非 ASCII 路径的图片文件。
+
+    使用 numpy 从文件字节读取然后交给 OpenCV 解码，避免 Windows 下
+    带中文路径时 cv2.imread 可能失败的问题。
+
+    返回 BGR 格式的 numpy 数组，或在文件为空/无法读取时返回 None。
+    """
     data = np.fromfile(str(path), dtype=np.uint8)
     if data.size == 0:
         return None
@@ -29,6 +42,11 @@ def imread_unicode(path: Path):
 
 
 def parse_yolo_file(path: Path) -> List[Tuple[int, float, float, float, float]]:
+    """解析单个 YOLO 标签文件为 (class, cx, cy, w, h) 列表。
+
+    返回空列表表示文件不存在或内容为空。
+    坐标为相对值（0..1），与常见 YOLO 格式兼容。
+    """
     if (not path.exists()) or path.stat().st_size == 0:
         return []
 
@@ -43,6 +61,10 @@ def parse_yolo_file(path: Path) -> List[Tuple[int, float, float, float, float]]:
 
 
 def collect_image_paths(image_dir: Path) -> List[Path]:
+    """在给定目录下收集常见图片扩展名的路径并按字母排序返回。
+
+    不会递归子目录。
+    """
     image_paths = []
     for pattern in IMAGE_GLOBS:
         image_paths.extend(image_dir.glob(pattern))
@@ -50,6 +72,13 @@ def collect_image_paths(image_dir: Path) -> List[Path]:
 
 
 def resize_rgb_image(image_path: Path, image_size: int, normalize: bool) -> np.ndarray:
+    """读取并调整图像到指定大小，返回 RGB 格式的 float32 数组。
+
+    - `image_size`：目标边长，输出为 (image_size, image_size, 3)
+    - `normalize`：是否将像素值缩放到 [0, 1]
+
+    抛出 FileNotFoundError 表示无法加载图片。
+    """
     img = imread_unicode(image_path)
     if img is None:
         raise FileNotFoundError(f"failed to read image: {image_path}")
@@ -62,6 +91,14 @@ def resize_rgb_image(image_path: Path, image_size: int, normalize: bool) -> np.n
 
 
 def resolve_dataset_layout(workspace: Path, data_yaml: Path, labels_root: Path) -> DatasetLayout:
+    """根据 YOLO-style `data.yaml` 文件解析数据集布局。
+
+    - `workspace`：工作目录，用于解析相对路径
+    - `data_yaml`：指向包含 keys: path, train, val, names, nc 的 YAML 文件
+    - `labels_root`：本地 labels 文件夹（training/testing）所在路径
+
+    返回 `DatasetLayout`，其中训练/验证图片目录相对 `dataset_root`。
+    """
     cfg = yaml.safe_load(data_yaml.read_text(encoding="utf-8"))
     cfg_path = cfg.get("path")
     dataset_root = Path(cfg_path) if Path(cfg_path).is_absolute() else (workspace / cfg_path).resolve()

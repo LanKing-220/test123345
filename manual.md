@@ -1,417 +1,607 @@
-# FOMO — `main.py` 完整执行流程手册（重写）
+# FOMO `main.py` 代码逻辑说明手册（工程版）
 
-本文档按从高到低、由整体到细节的顺序，完整、逐步地描述 `ei-tennis-openmv-v6/main.py` 的执行流程、关键数据流与各函数职责，便于阅读、测试与维护。
+## 目录
 
-目标受众：开发者、调试人员、需要理解系统运行时行为的测试人员。
+- 1. 系统目标与总体结构
+- 2. 启动阶段（`boot()`）
+- 3. 每帧主循环（`main_loop()`）
+- 4. 输入数据如何变成目标（候选到锁定）
+  - 4.1 候选构建
+  - 4.2 网球精化
+  - 4.3 跟踪匹配
+- 5. 状态机说明（`run_state_machine()`）
+- 6. 通信逻辑（UART）
+- 7. 舵机控制与运动策略
+- 8. 关键变量读写关系
+- 9. 常见问题与定位路径
+- 10. 最小联调检查清单
+- 11. 总流程图（Mermaid）
+- 12. 结论
+- 13. 状态转移表
+- 14. 关键调用链
+- 15. UART 协议样例
+- 16. 参数调优优先级
 
-内容结构：
+本文档用于把 `ei-tennis-openmv-v6/main.py` 的运行逻辑讲清楚，重点回答三个问题：
 
-- 一览（高层架构）
-- 全局状态与主要数据结构
-- 启动/初始化序列（boot）
-- 主循环（frame-by-frame）逐步详解
-- 主要子模块与函数职责速览
-- 模式/子状态机详解（PICK/PLAY 及其子态）
-- 错误点与运行时风险
-- 测试与验证清单
-- Mermaid 流程图（整合版）
-- 可选改进建议
+1. 每一帧到底做了什么。
+2. 状态为什么会切换。
+3. 关键变量是怎么被读写并影响行为的。
 
----
-
-## 一览（高层架构）
-
-系统由三部分组成：
-
-- 硬件接口层：摄像头（sensor）、LCD（display）、UART（串口通信）、舵机/Timer（Pin/Timer）、picker 反馈（GPIO）。
-- 感知与推理层：加载 TFLite 模型（`ml.Model`），执行 `predict()`，并通过 `fomo_post_process()` 转换输出为候选目标（tennis/player/racket）。
-- 应用逻辑层：目标筛选/精炼/跟踪、状态机（PICK/PLAY）、UI 绘制（各种 draw_* 函数）、与主机通信（send_runtime_packets、send_command_packet）。
-
-程序的控制中心是 `main_loop()`：每帧执行非阻塞串口处理、可能的握手重发、图像采集与推理、目标决策、绘制与发送。
-
----
-
-## 全局状态与主要数据结构
-
-- 布尔/配置：`ENABLE_UART`, `ENABLE_SERVOS` 等。
-- 串口相关：`uart`（UART 对象或 None）、`uart_rx_buffer`（接收缓冲字符串）、`UART_RX_BUFFER_MAX`。
-- 通信握手：`COMM_NO_LINK=0`、`COMM_LINKED=1`、`COMM_OK=2`、`comm_state`、`last_hello_ms`、`HELLO_INTERVAL_MS`。
-- 视觉目标与跟踪：
-  - `tennis_candidates`（列表）、`player_candidates`、`racket_candidates`。
-  - `tracked_tennis`（当前锁定的网球目标 dict 或 None）。
-  - `tracked_player`（当前锁定的玩家目标）。
-  - `scan_ranked_tennis`（保存的扫描候选列表）、`best_scan_tennis`。
-- 状态机变量：`mode`（MODE_PICK / MODE_PLAY）、`pick_substate`、`play_substate`。
-- 舵机控制：`pan_angle`, `tilt_angle`, `p1`/`p9` 引脚与 Timer、`servo_init_frames_remaining`。
-- 计数与事件：`balls_served`, `balls_picked`, `picker_feedback_state`、`picker_uart_done_pending`。
+适用对象：开发、联调、测试、项目汇报。
 
 ---
 
-## 启动与初始化（`boot()`）详解
+## 1. 系统目标与总体结构
 
-1. 初始化摄像头：`init_camera()` 设置像素格式、分辨率、关闭自动白平衡等，并跳帧以稳定图像。
-2. 初始化 LCD：`init_lcd()`，建立 `display.SPIDisplay`。
-3. 检查模型和标签：使用 `uos.stat(MODEL_PATH)`，从 `labels.txt` 读取类别名。
-4. 加载模型：`net = ml.Model(MODEL_PATH, load_to_fb=...)`。若内存不足或文件缺失，调用 `halt_with_error()` 停止并显示错误。
-5. 初始化 UART：`init_uart()`（基于 `ENABLE_UART`），若异常则将 `uart=None` 并继续运行（通信变为不可用）。
-6. 初始握手提示：若 `uart` 存在，`boot()` 发送一次 `hello` 并尝试记录 `last_hello_ms`。
-7. 初始化 picker/servos：`init_picker_feedback()`、`init_servos()`（若启用）并可能初始化 PWM。
-8. 初始化扫描队列：`begin_scan_round()`，设置 PICK 的初始子态与数据结构。
-9. 显示启动完成：`show_message("Model OK", "Running...")`。
+系统在 OpenMV 上运行，目标是：
 
-注意：`boot()` 负责保证关键硬件/模型可用性；其异常处理策略是对关键失败（文件/模型加载）停止运行，对可选硬件（UART/servo）采用降级（设为 None）并继续。
+- 检测并跟踪网球（PICK 模式主目标）。
+- 在无球场景切到球员/球拍跟踪（PLAY 模式）。
+- 通过 UART 和上位机/执行机构进行握手与运行数据交互。
+- 通过舵机控制实现云台扫描、回位、确认、跟踪。
 
----
+整体分成四层：
 
-## 主循环（`main_loop()`）逐步详解（推荐按此顺序阅读）
-
-每帧（一次循环）主要分为三类阶段：输入处理（串口、传感器）、感知与决策（推理、后处理、状态机）、输出与展示（绘制、发送）。下面按顺序展开：
-
-1) 时间/循环管理
-
-- `clock.tick()` 跟踪帧时间，`frame_index += 1`。
-
-2) 串口接收与解析（非阻塞）
-
-- `process_uart_rx()`：
-  - 检查 `uart.any()`，若有数据则 `uart.read(waiting)`。
-  - 将字节转换为文本（`uart_bytes_to_text()`），追加到 `uart_rx_buffer` 并裁剪到 `UART_RX_BUFFER_MAX`。
-  - 按行分割（以 '\n' 为界），对每行调用 `handle_uart_line(line)`。
-- `handle_uart_line(line)`：
-  - 去除空白后将文本转换为大写 `upper`。
-  - 优先处理握手关键字：若 `upper == 'HI'` 或以 `HI ` 开头，设 `comm_state = COMM_LINKED` 并 return；若 `OK` 则设 `COMM_OK` 并 return。
-  - 否则解析事件（如 `SERVED`, `PICKED` 等）并更新计数器。
-
-3) 非阻塞握手发送
-
-- `try_send_hello()`：若 `uart` 可用且 `comm_state == COMM_NO_LINK`，根据 `last_hello_ms` 与 `HELLO_INTERVAL_MS` 决定是否发送 `hello`。
-- 仅在未连接状态下发送，不会阻塞、不会等待回包。
-
-4) 图像获取与推理
-
-- `img = sensor.snapshot()` 获取一帧图像。
-- `predictions = net.predict([img], callback=fomo_post_process)` 执行推理；`fomo_post_process()` 将模型输出（热图）转换为每个类别的检测框列表。
-
-5) 候选构建与精炼
-
-- 遍历 `predictions`（跳过索引 0），按 `threshold_for_class(i)` 过滤置信度。
-- 根据标签名称判断目标类型（tennis/player/racket），为每个检测创建 candidate 字典，包含位置、尺寸、score、row/col、估算的 `dist_cm`（对 tennis 使用 `estimate_distance()`）。
-- 如果满足条件并启用了精炼，调用 `refine_tennis_candidates()` 或对特定目标调用 `refine_tennis_target()`。精炼可能使用颜色阈值、Hough 圆检测等，返回更准确的半径/直径与距离估计。
-
-6) 跟踪与匹配
-
-- 在 PICK_TRACK 阶段会调用 `match_tennis_track()`，否则使用 `choose_nearest_tennis()` 决定是否切换目标。
-- `match_tennis_track()` 维护 `tracked_tennis`：若为空则创建新的 track，否则基于距离门(`gate`)匹配并更新 tracked 位置、radius、miss 计数等。
-
-7) 状态机决策（`run_state_machine()`）
-
-- 该函数接收当前图像、候选与跟踪目标，返回 `active_target`, `mode_name`, `state_name`, `racket_present`, `racket_target`, `command_event`。
-- 其内部按 `mode`（PICK/PLAY）与子态（PICK_SCAN/RETURN/CONFIRM/TRACK）进行：
-  - PICK_SCAN：执行全局扫描（`update_global_scan()`）或云台扫描（`update_scan_motion()`），收集候选进入 `scan_ranked_tennis`，达到条件进入 PICK_RETURN 或切换到 PLAY。
-  - PICK_RETURN：移动云台到保存位置 `best_scan_tennis`，到位进入 CONFIRM。
-  - PICK_CONFIRM：等待目标稳定存在一段时间 (`PICK_CONFIRM_DURATION_MS`)，确认后转入 PICK_TRACK 并记录开始时间。
-  - PICK_TRACK：执行目标追踪（`update_servo_tracking()`），等待 picker 完成或超时，完成后触发采集并重置到扫描。
-  - PLAY：检测 player 与 racket，管理 player lock、倒计时显示与舵机跟踪。
-
-8) 绘制与 UI
-
-- `draw_seek_tennis_candidates()`：在 SEEK/SCAN 阶段绘制候选圈。
-- `draw_active_target()`：绘制锁定目标的圆/矩形、交叉、偏移、距离与标签。
-- `draw_status_panel()`：显示顶部状态（现在包括 comm_state 三态）、FPS、mode、capture、pan/tilt、confirm/track 倒计时等。
-- `draw_player_countdown()`：PLAY 下显示大数字倒计时。
-
-9) 通信输出
-
-- `send_runtime_packets(mode_name, active_target)`：基于 `active_target` 发送 CSV 风格的运行时数据（mode,row,col,distance）。
-- 若 `command_event` 非空，调用 `send_command_packet(cmd,arg,mode_name,state_name)`，目前为简单文本发送；如需应答/确认请扩展。
-
-10) 显示帧并循环
-
-- `display_frame(img)` 将画面写入 LCD，循环回到下一帧。
-
-错误与异常：主循环将捕获异常、在屏幕上显示错误信息，并在短暂停顿后继续或进入死循环（取决于异常点）。
+- 感知层：`sensor.snapshot()` + `ml.Model.predict()` + `fomo_post_process()`。
+- 目标层：候选构建、筛选、精化、track 匹配。
+- 决策层：`run_state_machine()`（PICK/PLAY 与子状态）。
+- 执行层：舵机控制、UI 绘制、UART 上报。
 
 ---
 
-## 主要子模块与函数职责速览（按功能分组）
+## 2. 启动阶段（`boot()`）做了什么
 
-- 硬件/系统：`init_camera`, `init_lcd`, `init_uart`, `init_servos`, `init_picker_feedback`, `P1_ISR`, `P9_ISR`。
-- 串口处理：`uart_bytes_to_text`, `process_uart_rx`, `handle_uart_line`, `parse_uart_event_count`, `uart_write_line`, `try_send_hello`。
-- 模型后处理：`fomo_post_process`, `make_grayscale_image`。
-- 目标估计/精炼：`estimate_tennis_diameter`, `estimate_color_blob`, `estimate_hough_circle`, `refine_tennis_target`, `refine_tennis_candidates`, `estimate_distance`。
-- 跟踪/分配：`match_tennis_track`, `choose_nearest_tennis`, `choose_player_target`, `choose_racket_target`, `ensure_target_id`。
-- 状态机/动作：`run_state_machine`, `begin_scan_round`, `select_scan_candidate`, `remember_scan_target`, `update_global_scan`, `update_return_to_saved_target`。
-- 绘制/UI：`draw_grid`, `draw_active_target`, `draw_status_panel`, `draw_player_countdown`, `draw_seek_tennis_candidates`。
-- 辅助：`send_runtime_packets`, `send_command_packet`（stub）、`read_picker_feedback`。
+`boot()` 的顺序很关键，失败策略也不同：
 
----
+1. `init_camera()`：相机基础配置。
+2. `init_lcd()`：显示初始化。
+3. 检查模型文件和标签文件。
+4. `ml.Model(...)` 加载模型。
+5. `init_uart()` 初始化串口（失败可降级为 `uart=None`）。
+6. 发送一次 `hello`（若串口可用）。
+7. `init_picker_feedback()` 初始化反馈输入。
+8. `init_servos()` 初始化舵机（如果启用）。
+9. `begin_scan_round()` 设置初始扫描状态。
 
-## 模式与子态快速参考
+失败处理原则：
 
-- MODE_PICK：用于扫描并拾取 tennis，子态含 `PICK_SCAN`, `PICK_RETURN`, `PICK_CONFIRM`, `PICK_TRACK`。
-- MODE_PLAY：用于比赛跟踪，子态 `PLAY_TRACK_PLAYER` 与等待发球等。
-
-状态转换要点：
-
-- 从 `PICK_SCAN` 到 `PICK_RETURN`：当扫描列表有可选目标并选择后。
-- `PICK_RETURN` 到 `PICK_CONFIRM`：云台回到保存位置并落锁开始确认计时。
-- `PICK_CONFIRM` 到 `PICK_TRACK`：确认计时结束，开始跟踪并准备采集。
-- `PICK_TRACK` 完成后回到 `PICK_SCAN`（触发采集并清理状态）。
-- 长时间无球会触发 `enter_play_mode()` 切换到 PLAY 模式。
+- 模型/关键文件失败：`halt_with_error()`，直接停机等待人工处理。
+- 可选硬件失败（如 UART 初始化异常）：记录异常并继续运行。
 
 ---
 
-## 关键风险点与建议（运行时注意）
+## 3. 每帧主循环（`main_loop()`）逻辑总线
 
-1. 模型加载/内存：`ml.Model` 可能因内存不足失败，须在目标板上验证模型大小与内存占用。
-2. 串口协议不一致：当前解析假设握手单独成行；若主机合并多信息于同一行，请改 `handle_uart_line` 实现复合解析。
-3. 舵机/Timer 兼容性：定时器回调与 Pin 控制在不同固件版本上可能表现不同，若遇到白屏或卡顿，先禁用 `ENABLE_SERVOS` 做隔离测试。
-4. 异常捕获范围：网络/串口写入在本实现中捕获并忽略异常，但应记录日志或上报以便定位硬件问题。
+每帧处理顺序固定，建议按这个顺序看代码：
 
----
+1. 时基更新：`clock.tick()`，`frame_index += 1`。
+2. 串口输入：`process_uart_rx()`。
+3. 握手维护：`try_send_hello()`。
+4. 图像采集：`img = sensor.snapshot()`。
+5. 推理后处理：`net.predict(..., callback=fomo_post_process)`。
+6. 候选构建：按类别生成 `tennis/player/racket` 候选列表。
+7. 目标精化：按条件执行 `refine_tennis_candidates()` 或 `refine_tennis_target()`。
+8. 跟踪维护：`match_tennis_track()` / `choose_player_target()`。
+9. 状态决策：`run_state_machine(...)`。
+10. UI 绘制：候选、锁定目标、状态面板、倒计时。
+11. 数据发送：`send_runtime_packets(...)` 与可选 `send_command_packet(...)`。
+12. 刷屏：`display_frame(img)`。
 
-## 测试与验证清单
-
-基础验证：
-
-- 启动设备，确认屏幕提示无致命错误。
-- 未连主机时顶部显示 `no link`。
-- 主机发送 `HI` 后顶部显示 `linked`。
-- 主机发送 `OK` 后顶部显示 `ok`。
-
-推理/功能测试：
-
-- 在 PICK_SCAN 阶段放置网球目标，观察候选在画面上显示并最终进入 PICK_TRACK。
-- 触发 picker 的反馈（或模拟 `PICKED` uart 行），观察 `balls_picked` 增加并触发采集流程。
-
-压力测试：
-
-- 长时间运行，观察内存/帧率是否稳定，确认无内存泄漏或定时器异常。
-
-协议兼容：
-
-- 测试主机发送复合行（如 `HI,SERVED:1`），确认 `handle_uart_line()` 是否需改造。
+这条链路是“感知 -> 决策 -> 执行”的闭环。
 
 ---
 
-## 全局流程图（Mermaid，可在支持 Mermaid 的渲染器查看）
+## 4. 输入数据如何变成目标（候选到锁定）
+
+### 4.1 候选构建
+
+`fomo_post_process()` 输出的是按类别通道分组的检测框列表。
+主循环中会做三步过滤：
+
+1. 跳过背景通道（`i == 0`）。
+2. 用 `threshold_for_class(i)` 做置信度过滤。
+3. 按标签名归类为 tennis/player/racket。
+
+每个候选对象通常包含：
+
+- 空间信息：`x, y, w, h, cx, cy`
+- 置信信息：`score`
+- 距离相关：`dist_cm`（tennis）
+- 网格位置：`row, col`
+- 类型：`kind`
+
+### 4.2 网球精化（核心价值）
+
+网球不是直接用检测框半径，而是进一步融合两种测量：
+
+- 颜色斑块法：`estimate_color_blob()`
+- Hough 圆法：`estimate_hough_circle()`
+
+融合在 `estimate_tennis_diameter()` 中完成，然后再经：
+
+- `fuse_tennis_radius()` 得到半径
+- `update_trimmed_tennis_measure()` 做滑窗截尾均值
+- `estimate_corrected_distance_cm()` 做距离校正
+
+这一步的目的：降低抖动、降低高光误判、提高距离稳定性。
+
+### 4.3 跟踪匹配
+
+`match_tennis_track()` 的核心逻辑：
+
+- 无候选：老化 `miss`，超阈值丢失 track。
+- 有候选但无 track：创建新 track。
+- 有候选且有 track：按门限和代价函数找最优匹配并平滑更新。
+
+关键字段：
+
+- `miss`：连续未匹配计数。
+- `id`：目标身份标识。
+- `radius/dist_cm`：控制与策略切换的核心量。
+
+### 4.4 模块实现流程（实现细节）
+
+下面按模块给出实现流程、关键函数、数据流与常见边界条件，便于工程实现与联调。
+
+- 感知层（Perception）实现流程：
+  - 函数/入口：`capture_frame()` -> `run_inference(img)` -> `fomo_post_process(raw_out)`。
+  - 数据结构：`RawDet`（网格索引、bbox、score、class），`Candidate`（x,y,w,h,cx,cy,score,kind,row,col）。
+  - 细节：确保 `sensor.snapshot()` 返回的图像尺寸、色域与训练时一致；推理前做归一化或 ROI 裁剪以节省时间。
+  - 边界：若 `net.predict` 超时或返回空，返回空候选列表并在上层计数连续空帧。
+
+- 候选构建（Candidate Builder）实现流程：
+  - 函数：`build_candidates(detections)`。
+  - 步骤：按通道过滤置信度 -> 转为 `Candidate` -> 计算 `cx,cy` 与 `grid row/col` -> 根据类别映射到 `tennis/player/racket`。
+  - 优化建议：先按 score 排序并只保留 top-K（例如 K=8）以减少后续计算成本。
+
+- 网球精化（Tennis Refinement）实现流程：
+  - 主函数：`refine_tennis_target(candidate)`。
+  - 内部调用：`estimate_color_blob(img, bbox)`、`estimate_hough_circle(img, bbox)` -> `fuse_tennis_radius(color_r, hough_r, weight)` -> `update_trimmed_tennis_measure(track, radius)` -> `estimate_corrected_distance_cm(track)`。
+  - 流程要点：所有图像处理步骤都应限制在 bbox 扩展窗口（例如 1.2x）内，避免全图操作。
+  - 异常处理：当 Hough 无圆，会以颜色法为主，并把置信度降低以便后续 track 判别。
+
+- 跟踪匹配（Tracking）实现流程：
+  - 主函数：`match_tennis_track(candidates, tracks)`。
+  - 算法：计算代价矩阵（位置距离 + 半径差 + score 惩罚）-> Hungarian 或贪心分配 -> 更新 track（位置、radius、miss、history）-> 创建/删除 track。
+  - 平滑：使用指数移动平均或卡尔曼滤波更新 `cx,cy,radius`，并维护 `history` 用于截尾均值。
+  - 删除条件：`miss >= TRACK_MAX_MISS` 或 `age > MAX_AGE && low_confidence`。
+
+- 状态机（Decision / State Machine）实现流程：
+  - 主函数：`run_state_machine(context)`，输入 `tracked_tennis`、`scan_ranked_tennis`、`comm_state`、`picker_feedback`。
+  - 输出：`mode_name, state_name, active_target, command_event`。
+  - 实现要点：把每个子状态封装成小函数（例如 `state_pick_scan_step()`、`state_pick_return_step()`），并只在主循环中按固定顺序调用；状态切换由明确的 guard 条件触发，并记录时间戳用于超时判断。
+
+- 舵机控制（Servo）实现流程：
+  - 函数：`compute_servo_commands(target_pose, servo_state)` -> `apply_pan_delta()`/`apply_tilt_delta()` -> `write_servo()`。
+  - 控制要点：先在控制层做限幅与死区判断，再写入硬件；写入频率受 UART/主循环周期限制（例如 20–30 Hz）。
+
+- 通信（UART）实现流程：
+  - 收：`process_uart_rx(line)` 解析握手/事件；必须容错换行符和空行。
+  - 发：`send_runtime_packets(frame_info)`，根据 `comm_state` 节点决定是否立即发送或降频发送（例如当 `comm_state != COMM_OK` 时降低发送率）。
+  - 要点：串口发包加上简单 checksum（可选）并保留重发策略；下行事件应立刻影响 `picker_feedback_state`。
+
+- UI 与绘制：
+  - 函数：`draw_candidates(img, candidates)`、`draw_tracks(img, tracks)`、`draw_status_panel(img, state)`。
+  - 要点：绘制仅用于调试，若渲染耗时过高需提供 `debug` 开关。
+
+每个模块均应返回明确的状态码/异常（例如 `OK`、`TIMEOUT`、`NO_DATA`），以便上层统一处理。
+
+---
+
+## 5. 状态机说明（`run_state_machine()`）
+
+状态机输出六元组：
+
+- `active_target`
+- `mode_name`
+- `state_name`
+- `racket_present`
+- `racket_target`
+- `command_event`
+
+### 5.1 顶层模式
+
+- `MODE_PICK`：找球、确认、跟踪、触发拾取。
+- `MODE_PLAY`：跟踪 player/racket。
+
+### 5.2 PICK 子状态
+
+1. `PICK_SCAN`
+- 行为：扫描环境，累积 `scan_ranked_tennis`。
+- 转移：有候选 -> `PICK_RETURN`；连续空扫描超阈值 -> 切 `PLAY`。
+
+2. `PICK_RETURN`
+- 行为：云台回到最佳候选的保存姿态。
+- 转移：回位到阈值范围 -> `PICK_CONFIRM`。
+
+3. `PICK_CONFIRM`
+- 行为：在当前视角验证目标稳定存在。
+- 转移：确认时间达到 `PICK_CONFIRM_DURATION_MS` -> `PICK_TRACK`。
+
+4. `PICK_TRACK`
+- 行为：持续跟踪，等待 picker 完成信号或超时。
+- 转移：收到反馈或超时 -> 触发采集闪烁并回到扫描。
+
+### 5.3 PLAY 子状态（当前主实现）
+
+- 以 player 为主目标进行跟踪。
+- 通过连续帧确认 racket 是否存在。
+- 用于展示与联动，不承担 PICK 采集流程。
+
+### 5.4 状态机伪代码与实现建议
+
+下面给出一个简化伪代码示例，便于工程实现时直接映射到函数：
+
+```python
+def run_state_machine(ctx):
+  if ctx.mode == MODE_PICK:
+    if ctx.state == PICK_SCAN:
+      state_pick_scan_step(ctx)
+    elif ctx.state == PICK_RETURN:
+      state_pick_return_step(ctx)
+    elif ctx.state == PICK_CONFIRM:
+      state_pick_confirm_step(ctx)
+    elif ctx.state == PICK_TRACK:
+      state_pick_track_step(ctx)
+  elif ctx.mode == MODE_PLAY:
+    state_play_step(ctx)
+
+def state_pick_scan_step(ctx):
+  update_scan_candidates(ctx)
+  if has_valid_scan_candidate(ctx):
+    ctx.state = PICK_RETURN
+    ctx.pick_confirm_start_ms = now()
+  elif ctx.scan_empty_rounds >= SCAN_EMPTY_ROUNDS_TO_PLAY:
+    ctx.mode = MODE_PLAY
+
+def state_pick_confirm_step(ctx):
+  if is_candidate_stable(ctx):
+    if now() - ctx.pick_confirm_start_ms >= PICK_CONFIRM_DURATION_MS:
+      ctx.state = PICK_TRACK
+      ctx.pick_track_start_ms = now()
+  else:
+    try_next_scan_candidate(ctx)
+```
+
+实现建议：
+- 把 `ctx`（上下文）设计为一个小 struct，包含所有会被读写的关键变量，便于单元测试和快照回放。
+- 把每个子状态的逻辑限制为 < 30 行代码，复杂逻辑拆成小函数（例如稳定性判断、候选选择、回位检查）。
+- 所有基于时间的判断统一使用 `now_ms()`，并在单元测试时可注入模拟时间。
+
+---
+
+## 6. 通信逻辑（UART）
+
+### 6.1 握手链路
+
+状态值：
+
+- `COMM_NO_LINK`
+- `COMM_LINKED`
+- `COMM_OK`
+
+规则：
+
+- 启动先发一次 `hello`。
+- `NO_LINK` 状态下每 `HELLO_INTERVAL_MS` 重发。
+- 收到 `HI` -> `LINKED`；收到 `OK` -> `OK`。
+
+### 6.2 上行数据
+
+`send_runtime_packets()` 发送运行帧数据，格式近似：
+
+- `mode,row,col,distance`
+
+如当前目标不是有效 tennis，会发送默认值（例如 `-1/0.0`）。
+
+### 6.3 下行事件
+
+`handle_uart_line()` 解析：
+
+- 握手：`HI`、`OK`
+- 事件：`SERVED`、`PICKED`、`PICKUP`、`COLLECT` 等
+
+计数由 `parse_uart_event_count()` 从行内提取（提取失败按 1 处理）。
+
+---
+
+## 7. 舵机控制与运动策略
+
+- 初始化阶段：`update_servo_init()` 让 pan/tilt 平滑回初值。
+- 跟踪阶段：`update_servo_tracking()` 用 PID 输出驱动角度变化。
+- 扫描阶段：`update_global_scan()` 或 `update_scan_motion()` 控制扫描轨迹。
+- 角度写入统一经 `apply_pan_delta()`、`apply_tilt_delta()`，内部有步长和边界限制。
+
+可认为舵机逻辑有三条保护：
+
+1. 死区（误差太小不动）。
+2. 单步限幅（防抖、防突变）。
+3. 角度边界（防机械撞限）。
+
+---
+
+## 8. 关键变量读写关系（建议重点关注）
+
+- `tracked_tennis`
+  - 写：`match_tennis_track()`、状态切换流程
+  - 读：`run_state_machine()`、绘制与上报
+
+- `scan_ranked_tennis` / `best_scan_tennis`
+  - 写：`remember_scan_target()`、`select_scan_candidate()`
+  - 读：`PICK_RETURN` / `PICK_CONFIRM`
+
+- `pick_confirm_start_ms` / `pick_track_start_ms`
+  - 写：状态进入时设置，离开时清零
+  - 读：确认/超时判断
+
+- `comm_state`
+  - 写：`handle_uart_line()`、启动/重试逻辑
+  - 读：`try_send_hello()`、状态面板显示
+
+- `capture_cmd` / `capture_flash_frames`
+  - 写：状态机触发采集阶段
+  - 读：状态面板与对外联动
+
+---
+
+## 9. 常见问题与定位路径
+
+1. 画面有框但始终不进入 TRACK
+- 先看：`PICK_CONFIRM_DURATION_MS` 是否过长。
+- 再看：`choose_confirmed_scan_target()` 是否持续匹配失败。
+
+2. 目标抖动明显
+- 看：`TRACK_SMOOTH_*`、`SERVO_DEADBAND`、`TRACK_*_MAX_STEP`。
+- 看：是否开启精化与滑窗截尾均值。
+
+3. 距离忽大忽小
+- 看：`estimate_tennis_diameter()` 中颜色/Hough 融合。
+- 看：`update_trimmed_tennis_measure()` 与 `correct_tennis_distance()`。
+
+4. 一直显示 no link
+- 看：上位机是否按行发送 `HI`/`OK`。
+- 看：波特率、端口和换行符是否一致。
+
+---
+
+## 10. 最小联调检查清单
+
+1. 启动后能看到实时画面和 FPS。
+2. 未接主机时显示 `no link`。
+3. 主机发 `HI` 后变 `linked`，发 `OK` 后变 `ok`。
+4. 放球后在 PICK 中出现候选并完成 `SCAN -> RETURN -> CONFIRM -> TRACK`。
+5. 模拟 picker 完成（GPIO 或 UART）后能回到扫描。
+
+---
+
+## 11. 总流程图（Mermaid）
 
 ```mermaid
 flowchart TD
-  Start([启动/初始化]) --> 摄像头["摄像头模块"]
-  摄像头 --> 显示["显示模块"]
-  显示 --> 模型["模型加载模块"]
-  模型 --> 串口["串口模块"]
-  串口 --> 硬件["硬件初始化（舵机/反馈）"]
-  硬件 --> 首次握手["首次握手发送（hello）"]
-  首次握手 --> 主循环["进入主循环"]
-
-  subgraph 每帧流程
-    主循环 --> 串口接收["串口接收与解析"]
-    串口接收 --> 握手发送["握手发送（非阻塞）"]
-    握手发送 --> 采集["图像采集"]
-    采集 --> 推理["模型推理与后处理"]
-    推理 --> 候选构建["候选目标构建"]
-    候选构建 --> 目标精炼["目标精炼（可选）"]
-    目标精炼 --> 跟踪匹配["跟踪与匹配"]
-    跟踪匹配 --> 状态决策["状态机决策（PICK/PLAY）"]
-    状态决策 --> 绘制UI["绘制与界面更新"]
-    绘制UI --> 发送数据["发送运行时数据"]
-    发送数据 --> 命令发送["命令发送（若有）"]
-    命令发送 --> 显示帧["刷新显示帧，进入下一循环"]
-  end
-
-  显示帧 --> 串口接收
+  A[boot 初始化] --> B[每帧: 串口读/hello重发]
+  B --> C[采集图像 + 模型推理]
+  C --> D[候选构建 tennis/player/racket]
+  D --> E[网球精化与跟踪更新]
+  E --> F[run_state_machine 决策]
+  F --> G[舵机控制 + UI绘制]
+  G --> H[UART 上报 + 刷屏]
+  H --> B
 ```
 
 ---
 
-## 可选改进（优先级建议）
+## 12. 结论（对“代码逻辑是否讲清楚”的判断标准）
 
-1. 强化 `handle_uart_line()` 的复合行解析（高优先）：兼容 `HI,SERVED:1` 之类的复合行。
-2. 为 `send_command_packet()` 实现确认/ACK 与重试（中优先）。
-3. 为关键错误引入持久化日志（低优先），以便离线分析崩溃与硬件异常。
+若读者能回答下面三问，说明已掌握核心逻辑：
 
----
+1. 为什么某一帧会从 `PICK_CONFIRM` 进入 `PICK_TRACK`。
+2. 哪些变量决定“目标是否还被认为是同一个”。
+3. 串口 `HI/OK` 与运行状态显示之间的对应关系。
 
-我已把重写后的完整手册保存到：
-
-`D:\副桌面文件夹\论文\fomo\manual.md`
-
-下一步我可以：
-
-- 将 Mermaid 图导出为 PNG/SVG 并保存到仓库；
-- 针对某个子函数（例如 `fomo_post_process` 或 `match_tennis_track`）生成更细化的流程图；
-- 或把手册导出为 PDF。
-
-请告诉我你的优先项。
+本手册已经按“数据流 + 状态流 + 控制流”三条线给出对应答案，可直接用于开发联调和对外讲解。
 
 ---
 
-## 面向甲方的逐步详尽说明（非常细化，含时间与帧数说明）
-下面以“白话、步骤化”的方式，从开机到各个动作触发的时序、频率和判定条件逐条说明，便于甲方非技术人员理解系统在每一步在做什么。
+## 13. 状态转移表（可直接用于评审）
 
-注：文中多数“每帧”操作频率依赖设备帧率（camera fps），若帧率为 15 fps，则 1 帧 ≈ 66 ms；若为 10 fps，则 1 帧 ≈ 100 ms。我们同时给出帧数和以 15 fps 为例的近似秒数以便理解。
+### 13.1 PICK 模式状态转移
 
-1) 启动（上电或重启）
-  - 系统先启动摄像头与显示，加载模型文件和标签；若模型文件缺失或内存不足，会在屏幕上报错并停止。
-  - 若串口可用，设备会立即向主机发送一次 `hello`（称为“首次 hello”）。这一步是立刻进行的，不受帧循环节拍限制。
+| 当前状态 | 进入条件 | 退出条件 | 下一状态 | 关键变量 |
+| --- | --- | --- | --- | --- |
+| `PICK_SCAN` | 启动后默认进入，或 TRACK 完成回退 | 扫描完成且有候选 | `PICK_RETURN` | `scan_ranked_tennis`, `best_scan_tennis` |
+| `PICK_SCAN` | 同上 | 连续空扫描达到阈值 | `MODE_PLAY` | `scan_empty_rounds`, `SCAN_EMPTY_ROUNDS_TO_PLAY` |
+| `PICK_RETURN` | 选择了候选目标 | 云台回位到目标姿态 | `PICK_CONFIRM` | `pan_angle`, `tilt_angle`, `best_scan_tennis` |
+| `PICK_CONFIRM` | 已回位并开始确认计时 | 持续确认达到时长 | `PICK_TRACK` | `pick_confirm_start_ms`, `PICK_CONFIRM_DURATION_MS` |
+| `PICK_CONFIRM` | 同上 | 当前候选确认失败且有下一个候选 | `PICK_RETURN` | `scan_candidate_index` |
+| `PICK_TRACK` | 确认通过后进入 | picker 完成或跟踪超时 | `PICK_SCAN` | `pick_track_start_ms`, `PICK_TRACK_DURATION_MS`, `picker_feedback_state` |
 
-2) 主循环开始（每帧循环）
-  - 系统每帧都会执行一次主循环，主要步骤包括：读取串口、（必要时）重发 hello、拍一帧图像、做模型推理、生成候选目标、状态机决策、绘制界面并发送运行数据。
-  - 串口读取：每帧都会检查串口缓冲区并把完整文本行处理一次；因此串口消息被处理的频率等同于设备帧率（例如 15 fps 时大约每 66 ms 检查一次）。
+### 13.2 PLAY 模式主流程
 
-3) 握手（hello / HI / OK）
-  - 首次 hello：在启动阶段立即发送一次 `hello`，提示主机设备上线。
-  - 重发逻辑：如果主机一直没有回复 `HI`，设备会每 5000 ms（5 秒）再次发送 `hello`，直到收到 `HI` 为止。这个 5 秒间隔恒定不受帧率影响。
-  - 收到 `HI`：设备在处理到包含 `HI` 的串口行时立即把通信状态标记为 `linked`，并停止继续发送 `hello`（因已建立链路）。
-  - 收到 `OK`：若随后收到 `OK`，设备将通信状态标记为 `ok`，表示主机确认通信成功并可以正常交互。
-
-4) 舵机初始化（若启用）
-  - 在初始序列中，舵机会有一个“初始化保持期”为 `SERVO_INIT_HOLD_FRAMES = 28` 帧。
-  - 28 帧意味着：若帧率 15 fps，则约 28/15 ≈ 1.9 秒；若 10 fps，则约 2.8 秒。在这段时间内系统会把舵机移动到初始角度并按阶段开启 PWM 输出。
-
-5) 扫描与候选收集（PICK_SCAN）
-  - 系统在扫描阶段会左右摆动云台并记录在不同视角下检测到的候选（scan_ranked_tennis）。
-  - 如果多次扫描都没有发现候选（由 SCAN_EMPTY_ROUNDS_TO_PLAY = 2 控制），系统会在第 2 个空扫描回合后自动切换到 PLAY 模式（即不再持续扫描，进入玩家跟踪模式）。
-
-6) 目标返回与确认（PICK_RETURN → PICK_CONFIRM）
-  - 当从扫描列表选择了一个候选后，系统会把云台移动回该候选的保存位（PICK_RETURN）。
-  - 一旦云台到位，系统记录当前时间并进入确认期（PICK_CONFIRM），要求目标在画面中稳定存在一定时间才能确认。确认时长为 `PICK_CONFIRM_DURATION_MS = 2000 ms`（即 2 秒）。
-  - 也就是说，目标必须在确认期内持续被检测到并满足位置条件，超过 2 秒后才进入 PICK_TRACK（开始正式跟踪并准备采集）。
-
-7) 跟踪阶段（PICK_TRACK）
-  - 一旦进入 PICK_TRACK，系统开始对目标做舵机追踪并计时，最长跟踪时长为 `PICK_TRACK_DURATION_MS = 20000 ms`（即 20 秒）。
-  - 如果 picker（取球器）在跟踪期间发出完成信号（或通过 UART 收到 PICKED），系统会提前结束跟踪并执行采集流程；如果 20 秒到达仍无完成信号，则认为超时并回到扫描。
-
-8) PLAY 模式下玩家与球拍出现判断
-  - 系统通过检测“玩家”与“球拍”来判定是否进入准备状态。`PLAY_RACKET_CONFIRM_FRAMES = 2` 表示连续检测到球拍至少 2 帧就认为球拍出现（若帧率 15 fps，则约 0.13 秒就能判定）。
-  - 当玩家锁定并且球拍出现后，会开始一个玩家倒计时（PLAYER_DETECT_COUNTDOWN_MS，文中默认 5000 ms 即 5 秒）来决定是否进入发球等待或其他子态（此值写在代码中，文档需说明实际数值）。
-
-9) 串口发送运行数据
-  - 系统每帧都会根据当前 `active_target` 调用 `send_runtime_packets`，把 `mode,row,col,distance` 等信息以 CSV 形式发送给主机；因此主机能以帧级频率接收到设备的运行状态（帧率取决于设备实际推理速度）。
-
-10) UI 更新频率
-  - 屏幕的绘制在每帧末尾执行一次，包括：网格、候选、锁定目标标注、顶部状态栏（包含通信状态）、以及 PLAY 的倒计时数字等。
-
-11) 出错与显示
-  - 若主循环中出现未捕获异常，设备会在 LCD 上显示 `RUN FAIL` 与异常文本，并在短暂停顿后继续或停住（视错误类型）。
-
-12) 典型时间线示例（假设帧率约 15 fps，用于帮助非技术人员理解）
-  - 0.0 s：设备上电，立即发送一次 `hello`。
-  - 0.0–2.0 s（约 28 帧）：舵机完成初始化到位（若启用）。
-  - 0.0–持续：每帧（约每 66 ms）检查串口、采集图像、进行推理与渲染。
-  - 若主机未回复：每 5.0 s 再次发送 `hello`，直至收到 `HI`。
-  - 当选择目标并回位：目标必须维持至少 2.0 s（PICK_CONFIRM）才能确认并进入跟踪阶段。
-  - 跟踪最多进行 20.0 s（PICK_TRACK），直到 picker 完成或超时。
-
-13) 关键术语白话解释（给甲方人员）
-  - 帧（frame）：设备拍摄并处理的一张图片；帧率越高，处理越频繁，系统更“及时”。
-  - 扫描回合（scan round）：系统左右摆动云台一次并记录候选位置的周期。
-  - 确认期（confirm）：系统要求目标在一定时间内稳定出现，避免误触发。
-  - 跟踪期（track）：系统使用舵机跟随目标并等待采集执行或超时。
-
-14) 给甲方的操作建议
-  - 测试握手：上电后若设备屏幕顶部显示 `no link`，说明主机未回应。让主机发送 `HI` 与 `OK` 检查状态变更。
-  - 测试采集流程：把目标放入视野，观察界面上从候选→回位确认（需 2s）→进入跟踪并最终触发采集。
-  - 如需更快确认：可以讨论把 `PICK_CONFIRM_DURATION_MS` 调小，但这会增加误触发风险。
+| 当前状态 | 行为重点 | 关键判据 |
+| --- | --- | --- |
+| `PLAY_TRACK_PLAYER` | 跟踪 player 目标，辅助判断 racket | `is_live_target(player_target)` 与 `racket_present` |
 
 ---
 
-以上为非常细化的逐步说明，我已把它追加到手册文件中。若你需要，我可以把这段内容按 PPT 的形式生成若干页幻灯片，便于直接给甲方展示；或把关键时间点绘制为时间线图（PNG）。
+## 14. 关键调用链（从入口到行为）
 
+### 14.1 启动链路
 
-- 计时：`clock.tick()`，`frame_index += 1`。
-- 串口读：`process_uart_rx()` 读取 `uart.any()`，将数据解码追加到 `uart_rx_buffer`，按行分发到 `handle_uart_line()`。
-  - `handle_uart_line()`：优先检查 `HI` / `OK` 更新 `comm_state`；其余按事件类型更新 `balls_served`、`balls_picked` 等。
-- 握手发送：`try_send_hello()` 在 `comm_state==NO_LINK` 时按 `HELLO_INTERVAL_MS` 重发 `hello`。
-- 采集帧：`img = sensor.snapshot()`。
-- 网格：`draw_grid()`（仅绘制 UI 帮助线）。
-- 推理：`predictions = net.predict([img], callback=fomo_post_process)`。
-  - `fomo_post_process()` 把模型输出热图转为候选框列表（按类别通道返回列表）。
-- 构建候选（遍历预测结果）
-  - 忽略 `i==0` 的背景通道。
-  - 根据 `threshold_for_class(i)` 过滤置信度。
-  - 根据标签字符串判断 `is_tennis` / `is_player` / `is_racket`。
-  - 对每个检测框计算中心 `cx,cy`、网格 `row,col`、估算 `radius`/`dist_cm`（仅 tennis 使用距离估计），并加入对应候选数组。
-- 目标精炼（可选）
-  - 若 `refine_all_tennis` 条件满足（配置与状态），对所有 tennis 候选调用 `refine_tennis_target()`（内部会调用 `estimate_tennis_diameter()` 和 Hough / 色块等策略），以获得更准确的 `radius` 与 `dist_cm`。
-- 匹配/跟踪
-  - 如果处于 PICK_TRACK 阶段会调用 `match_tennis_track()` 将检测候选与 `tracked_tennis` 匹配并更新 track（或创建新 track）。
-  - `choose_player_target()` 在 PLAY 模式下选择合适的 player 并维护 `tracked_player`。
-- 状态机
-  - `run_state_machine()` 根据 `mode` 与子状态（PICK/PLAY、PICK_SCAN/PICK_RETURN/PICK_CONFIRM/PICK_TRACK 等）进行决策：
-    - PICK_SCAN：执行扫描逻辑（`update_global_scan()` 或 `update_scan_motion()`），收集候选并决定是否进入 RETURN/CONFIRM。
-    - PICK_RETURN：移动云台返回保存位置，若到位进入 CONFIRM。
-    - PICK_CONFIRM：在目标稳定存在一段时间后转至 PICK_TRACK 并开始计时采集与拍照流程。
-    - PICK_TRACK：追踪目标直到 picker 完成或超时，之后触发采集并回到扫描。
-    - PLAY：跟踪玩家与球拍，管理 player 锁定计时与倒计时显示。
-- 绘制
-  - `draw_seek_tennis_candidates()`（显示候选圈）、`draw_active_target()`（显示锁定目标信息）、`draw_status_panel()`（显示 fps、mode、capture、pan/tilt、comm_state 等）、`draw_player_countdown()`（PLAY 下的倒计时）。
-- 发送运行时数据
-  - `send_runtime_packets(mode_name, active_target)`：将 `mode,row,col,distance` 发到主机（CSV 格式）。
-- 发送命令（可选）
-  - 若 `command_event` 非空，调用 `send_command_packet(...)`（目前为简单格式化实现）。
-- 显示帧：`display_frame(img)` 并进入下一帧循环。
+`boot()` -> `init_camera()` -> `init_lcd()` -> 模型/标签检查 -> `ml.Model(...)` -> `init_uart()` -> `init_picker_feedback()` -> `init_servos()` -> `begin_scan_round()`
 
-3) 关键函数与潜在异常点
+### 14.2 每帧计算链路
 
-   - `ml.Model(...)`：模型文件不存在或内存不足会触发异常，`boot()` 捕获并 halt。
-   - `net.predict()`：若模型或输入格式异常会抛出异常，主循环捕获后显示错误并 sleep 若干 ms。
-   - `uart.read()` / `uart.write()`：串口异常会被封装的写函数捕获并打印异常，读操作在 `process_uart_rx()` 内部尝试/忽略异常。
-   - 舵机/Timer：`init_servos()`、`start_pan_pwm()` 调用可能受硬件限制影响，异常应在硬件上调试。
-4) MODE 与子状态快速路线图
+`main_loop()`
+-> `process_uart_rx()` / `try_send_hello()`
+-> `sensor.snapshot()`
+-> `net.predict(..., callback=fomo_post_process)`
+-> 候选构建
+-> `refine_tennis_candidates()` 或 `refine_tennis_target()`
+-> `match_tennis_track()` / `choose_player_target()`
+-> `run_state_machine()`
+-> `draw_*` + `send_runtime_packets()` + `display_frame()`
 
-   - 初始：`begin_scan_round()` 设置 PICK 扫描队列。
-   - PICK_SCAN → 如果收集到有效候选并回到保存位 → PICK_RETURN → 到位 → PICK_CONFIRM → 确认足够时间 → PICK_TRACK → picker 完成或超时 → 返回 PICK_SCAN。
-   - 如果长时间空闲并达到阈值，自动切换到 PLAY 模式。
+### 14.3 网球测量链路
+
+`refine_tennis_target()`
+-> `estimate_tennis_diameter()`
+-> `estimate_color_blob()` + `estimate_hough_circle()`
+-> `fuse_tennis_radius()`
+-> `update_trimmed_tennis_measure()`
+-> `estimate_corrected_distance_cm()`
 
 ---
 
-## 完整流程图（更细粒度，涵盖推理、候选构建与状态机）
+## 15. UART 协议样例（联调直接可用）
 
-```mermaid
-flowchart TD
-  Start([Start/boot]) --> InitCam["init_camera()"]
-  InitCam --> InitLCD["init_lcd()"]
-  InitLCD --> LoadModel["加载模型 & labels"]
-  LoadModel --> InitUART["init_uart()"]
-  InitUART --> InitHW["init_picker_feedback()/init_servos()"]
-  InitHW --> SendFirstHello["发送初始 hello（若 uart 可用）"]
-  SendFirstHello --> MainLoop["进入 main_loop()"]
+### 15.1 下位机接收（上位机发送给设备）
 
-  subgraph FrameLoop [每帧流程]
-  MainLoop --> Tick["clock.tick(); frame_index++"]
-  Tick --> ProcUART["process_uart_rx() -> handle_uart_line()"]
-  ProcUART --> TryHello["try_send_hello()（非阻塞）"]
-  TryHello --> Capture["img = sensor.snapshot()"]
-  Capture --> Predict["predictions = net.predict([img], callback=fomo_post_process)"]
-  Predict --> ForEachClass["遍历 predictions 各类别通道（i>0）"]
-  ForEachClass --> FilterByConf["按 threshold_for_class(i) 过滤"]
-  FilterByConf --> BuildCandidates["为每个框构造 candidate（tennis/player/racket）"]
-  BuildCandidates --> MaybeRefine["若 refine_all_tennis 则 refine_tennis_candidates()"]
-  MaybeRefine --> MatchTrack["若 PICK_TRACK 则 match_tennis_track() 否则 tracked_tennis 保持"]
-  MatchTrack --> ChoosePlayer["若 PLAY 则 choose_player_target()"]
-  ChoosePlayer --> RunSM["run_state_machine() 返回 active_target, mode_name, state_name, command_event"]
-  RunSM --> DrawTargets["draw_seek_tennis_candidates / draw_active_target"]
-  DrawTargets --> DrawStatus["draw_status_panel(显示 comm_state / fps / pan/tilt)"]
-  DrawStatus --> DrawCountdown["draw_player_countdown()"]
-  DrawCountdown --> SendRuntime["send_runtime_packets(mode_name, active_target)"]
-  SendRuntime --> CondCmd{"command_event 非空?"}
-  CondCmd -->|是| SendCmd["send_command_packet(...) (stub)"]
-  CondCmd -->|否| SkipCmd["跳过命令发送"]
-  SendCmd --> Display["display_frame(img)
-  下一帧 -> Tick"]
-  SkipCmd --> Display
-  end
+- 握手：
+  - `HI`
+  - `OK`
+- 事件：
+  - `SERVED:1`
+  - `PICKED:1`
+  - `PICKUP 2`
 
-  Display --> Tick
+### 15.2 下位机发送（设备发给上位机）
+
+- 运行包样例：
+  - `SEEK,3,7,142.5`
+  - `PLAY,-1,-1,0.0`
+
+解释：
+
+- 第 1 列是模式名（如 `SEEK`/`PLAY`）。
+- 第 2、3 列是网格位置（无有效 tennis 则为 `-1,-1`）。
+- 第 4 列是距离（cm）。
+
+---
+
+## 16. 参数调优优先级（建议按顺序调）
+
+### 第 1 组：先保稳定
+
+1. `PICK_CONFIRM_DURATION_MS`
+2. `SERVO_DEADBAND`
+3. `TRACK_PAN_MAX_STEP`, `TRACK_TILT_MAX_STEP`
+
+目标：先让系统“不乱动、不误触发”。
+
+### 第 2 组：再提灵敏度
+
+1. `THRESH_TENNIS`, `THRESH_PLAYER`, `THRESH_RACKET`
+2. `TRACK_GATE_MIN`, `TRACK_MAX_MISS`
+3. `PLAY_RACKET_CONFIRM_FRAMES`
+
+目标：在不牺牲稳定性的前提下提高响应速度。
+
+### 第 3 组：最后修距离与形态
+
+1. `DISTANCE_SCALE`
+2. `COLOR_TOL_*`
+3. `HOUGH_INTERVAL`, `EDGE_*`, `GLARE_*`
+
+目标：改善距离估计和高光场景表现。
+
+---
+
+## 17. 故障定位决策树（实战版）
+
+1. 现象：屏幕始终 `no link`
+- 检查上位机是否按行发送 `HI` 和 `OK`
+- 检查串口参数：端口、波特率、换行
+
+2. 现象：能检出但不进入 TRACK
+- 检查 `PICK_CONFIRM_DURATION_MS`
+- 检查 `choose_confirmed_scan_target()` 是否持续失败
+- 检查候选是否频繁跳变（看 `scan_ranked_tennis` 变化）
+
+3. 现象：舵机跟踪抖动
+- 增大 `SERVO_DEADBAND`
+- 降低 `TRACK_*_MAX_STEP`
+- 检查 PID 参数是否过大
+
+4. 现象：距离估计明显漂移
+- 检查 `DISTANCE_SCALE`
+- 检查 `refined_diameter` 历史是否稳定
+- 检查强光条件下 `GLARE_*` 阈值是否合理
+
+5. 现象：状态频繁在 PICK/PLAY 之间来回
+- 检查 `SCAN_EMPTY_ROUNDS_TO_PLAY`
+- 检查现场是否长期“看不到有效 tennis”
+
+---
+
+## 18. 文档使用建议
+
+- 对研发联调：优先看第 3、4、5、8、13、17 节。
+- 对答辩汇报：优先看第 1、3、5、10、11、12 节。
+- 对现场调参：优先看第 9、16、17 节。
+
+## 19. 模块接口与数据结构（工程接口清单）
+
+- 核心数据结构（示例，Python 风格）：
+
+```python
+class Candidate:
+  x: int; y: int; w: int; h: int
+  cx: float; cy: float; score: float
+  kind: str  # 'tennis'/'player'/'racket'
+  row: int; col: int
+
+class Track:
+  id: int; kind: str
+  cx: float; cy: float; radius: float
+  dist_cm: float; score: float
+  miss: int; age: int
+  history: list  # recent measures for smoothing
+
+class ServoState:
+  pan_angle: float; tilt_angle: float
+  pan_target: float; tilt_target: float
+
+class CommState:
+  state: str  # COMM_NO_LINK / COMM_LINKED / COMM_OK
+  last_hi_ms: int; last_ok_ms: int
+
+class Context:
+  frame_index: int
+  candidates: list[Candidate]
+  tracks: list[Track]
+  servo: ServoState
+  comm: CommState
+  mode: str; state: str
 ```
 
+- 主要函数签名（建议）：
+  - `capture_frame() -> img`
+  - `run_inference(img) -> raw_detections`
+  - `build_candidates(raw_detections) -> list[Candidate]`
+  - `refine_tennis_target(img, candidate, track) -> updated_track`
+  - `match_tennis_track(candidates, tracks) -> tracks`
+  - `run_state_machine(ctx) -> (mode,state,event)`
+  - `compute_servo_commands(ctx) -> (pan_cmd, tilt_cmd)`
+  - `process_uart_rx(line) -> event`
+
+- 常见调用链示例（每帧）：
+  - `img = capture_frame()`
+  - `raw = run_inference(img)`
+  - `cands = build_candidates(raw)`
+  - `tracks = match_tennis_track(cands, ctx.tracks)`
+  - `for t in tracks: if t.kind=='tennis': refine_tennis_target(img, best_candidate_for(t), t)`
+  - `mode,state,event = run_state_machine(ctx)`
+  - `pan,tilt = compute_servo_commands(ctx)`
+  - `write_servo(pan, tilt)`
+  - `send_runtime_packets(ctx)`
+
+## 20. 调试与单元测试建议
+
+- 为关键模块（candidate builder、refiner、tracker、state machine）编写单元测试，使用静态图片与人工标注作为回归集。
+- 对状态机做状态覆盖测试：模拟各种输入序列（无球、短时球、遮挡、picker 信号）检查状态转移与超时逻辑。
+- 在开发阶段打开详细日志（`LOG_LEVEL=DEBUG`），并记录 `ctx` 快照以便离线分析。
+
 ---
 
-已把以上内容追加到本手册。如果你还希望：
-
-- 我把每个子函数（如 `fomo_post_process`, `match_tennis_track`, `refine_tennis_target`）分别拆成小流程图并保存图片，或
-- 生成一份 PDF 手册包含流程图并打包，
-  请告诉我你的优先项，我会继续处理。
+已完成以上扩展；如需我把某个模块的完整参考实现（可运行的 Python 模块）写出来，我可以继续实现并附带单元测试。
