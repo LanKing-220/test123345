@@ -46,7 +46,7 @@ HOST_CTRL_ACTIONS = (
     HOST_CTRL_ACTION_MODE_PLAY,
 )
 
-THRESH_TENNIS = 0.35
+THRESH_TENNIS = 0.60
 # 人和球拍更容易误触发，阈值调高后会更保守，降低敏感度。
 THRESH_PLAYER = 0.75
 THRESH_RACKET = 0.70
@@ -92,6 +92,7 @@ PAN_INIT_ANGLE = 90.0
 TILT_INIT_ANGLE = 132.0
 SERVO_INIT_HOLD_FRAMES = 28
 SERVO_PWM_STAGGER_FRAMES = 8
+SERVO_SPEED_SCALE = 1.5
 
 pan_angle = PAN_INIT_ANGLE
 tilt_angle = TILT_INIT_ANGLE
@@ -101,11 +102,11 @@ tilt_angle_limit = [80.0, 150.0]
 SERVO_DEADBAND = 6
 SCAN_TILT_TARGET = 132.0
 SCAN_TILT_FLOOR = 128.0
-SCAN_TILT_STEP = 1.2
-SERVO_INIT_STEP = 0.35
-SCAN_PAN_STEP = 0.75
-TRACK_PAN_MAX_STEP = 1.1
-TRACK_TILT_MAX_STEP = 1.0
+SCAN_TILT_STEP = 1.2 * SERVO_SPEED_SCALE
+SERVO_INIT_STEP = 0.35 * SERVO_SPEED_SCALE
+SCAN_PAN_STEP = 0.75 * SERVO_SPEED_SCALE
+TRACK_PAN_MAX_STEP = 1.1 * SERVO_SPEED_SCALE
+TRACK_TILT_MAX_STEP = 1.0 * SERVO_SPEED_SCALE
 
 pan_pid = PID(p=0.07, i=0, imax=90)
 tilt_pid = PID(p=0.05, i=0, imax=90)
@@ -138,8 +139,8 @@ RACKET_LINK_MARGIN_X_RATIO = 0.60
 RACKET_LINK_MARGIN_Y_RATIO = 0.35
 SCAN_ALIGN_MARGIN = 1.0
 RETURN_LOCK_MARGIN = 2.0
-RETURN_PAN_STEP = 1.0
-RETURN_TILT_STEP = 1.0
+RETURN_PAN_STEP = 1.0 * SERVO_SPEED_SCALE
+RETURN_TILT_STEP = 1.0 * SERVO_SPEED_SCALE
 SEEK_TILT_RESET_MARGIN = 1.0
 LOCK_ALIGN_MARGIN_X = 18
 LOCK_ALIGN_MARGIN_Y = 16
@@ -225,6 +226,7 @@ COLOR_TOL_A_EXTRA = 3
 COLOR_TOL_B_EXTRA = 3.5
 
 DRAW_RADIUS_SCALE = 1.15
+CLOSE_DRAW_RADIUS_SCALE = 1.00
 ROI_NEAR_SWITCH = 26
 FAR_ROI_PAD_MIN = 6
 MAX_COLOR_BLOB_AREA_MULT = 6
@@ -236,7 +238,6 @@ CLOSE_COLOR_A_MARGIN = 5
 CLOSE_COLOR_B_MARGIN = 6
 CLOSE_COLOR_ROUNDNESS_MIN = 0.20
 CLOSE_COLOR_DENSITY_MIN = 0.20
-CLOSE_BALL_DISTANCE_CM = 10.0
 CLOSE_BALL_BBOX_SIZE_TH = 32
 CLOSE_BALL_MERGE_COUNT_TH = 2
 CLOSE_BALL_ROI_PAD_MIN = 18
@@ -248,6 +249,12 @@ FOMO_DUPLICATE_GENERAL_IOU = 0.35
 FOMO_DUPLICATE_CLOSE_IOU = 0.08
 FOMO_DUPLICATE_CLOSE_SIZE_TH = 18
 FOMO_DUPLICATE_CENTER_PAD = 14
+CLOSE_REFINE_DUPLICATE_DISTANCE_CM = 10.0
+CLOSE_REFINE_DUPLICATE_CENTER_MIN = 10
+CLOSE_REFINE_DUPLICATE_CENTER_RATIO_PCT = 40
+CLOSE_REFINE_DUPLICATE_DIAMETER_RATIO_MAX_PCT = 180
+CLOSE_REFINE_DUPLICATE_DIST_DIFF_CM = 4.0
+CLOSE_REFINE_DUPLICATE_CENTER_PAD = 8
 CIRCLE_DENSITY_REF = 0.78539816339
 
 EDGE_LOW_TH = 55
@@ -266,55 +273,43 @@ FOMO_HEATMAP_SCORE_TH = 0.22
 LOCAL_NEAREST_GATE_MIN = 24
 LOCAL_NEAREST_GATE_RADIUS_SCALE = 4
 
+# 相机固定参数：关闭自动曝光/增益/白平衡，避免画面发白与亮度漂移。
+# 这里按“室内开灯但画面偏暗”的场景做了更亮的手动预设；
+# 固定白平衡改成手动 RGB 增益，轻微抬高红蓝通道，压住黄绿偏色。
+CAMERA_MANUAL_WHITEBAL = False
+CAMERA_MANUAL_RGB_GAIN_DB = (0.0, 0.0, 0.0)
+CAMERA_MANUAL_GAIN_DB = 1.0
+CAMERA_MANUAL_EXPOSURE_US = 100000
+
+
 
 def init_camera():
     sensor.reset()
     sensor.set_pixformat(sensor.RGB565)
     sensor.set_framesize(sensor.QVGA)
 
-    # 先让相机自动收敛，再把参数锁住，避免颜色/亮度漂移。
-    sensor.skip_frames(time=800)
+    # 完全手动：不走自动收敛，启动后直接固定参数。
+    sensor.skip_frames(time=200)
 
     try:
-        rgb_gain = sensor.get_rgb_gain_db()
-    except Exception:
-        rgb_gain = None
-
-    try:
-        gain_db = sensor.get_gain_db()
-    except Exception:
-        gain_db = None
-
-    try:
-        exposure_us = sensor.get_exposure_us()
-    except Exception:
-        exposure_us = None
-
-    try:
-        if rgb_gain is not None:
-            sensor.set_auto_whitebal(False, rgb_gain_db=rgb_gain)
+        if CAMERA_MANUAL_WHITEBAL:
+            sensor.set_auto_whitebal(False, rgb_gain_db=CAMERA_MANUAL_RGB_GAIN_DB)
         else:
             sensor.set_auto_whitebal(False)
     except Exception:
         sensor.set_auto_whitebal(False)
 
     try:
-        if gain_db is not None:
-            sensor.set_auto_gain(False, gain_db=gain_db)
-        else:
-            sensor.set_auto_gain(False)
+        sensor.set_auto_gain(False, gain_db=CAMERA_MANUAL_GAIN_DB)
     except Exception:
-        pass
+        sensor.set_auto_gain(False)
 
     try:
-        if exposure_us is not None:
-            sensor.set_auto_exposure(False, exposure_us=exposure_us)
-        else:
-            sensor.set_auto_exposure(False)
+        sensor.set_auto_exposure(False, exposure_us=CAMERA_MANUAL_EXPOSURE_US)
     except Exception:
-        pass
+        sensor.set_auto_exposure(False)
 
-    sensor.skip_frames(5)
+    sensor.skip_frames(time=300)
 
 
 def init_lcd():
@@ -917,10 +912,196 @@ def is_close_range_candidate(target):
     if bbox_size >= CLOSE_BALL_BBOX_SIZE_TH:
         return True
 
-    dist_cm = target.get("dist_cm")
-    if (dist_cm is not None) and (dist_cm <= CLOSE_BALL_DISTANCE_CM):
-        return True
     return False
+
+
+def target_raw_distance_cm(target):
+    if target is None:
+        return None
+
+    dist_cm = target.get("raw_dist_cm")
+    if dist_cm is None:
+        dist_cm = target.get("dist_cm")
+    if dist_cm is None:
+        return None
+    return float(dist_cm)
+
+
+def target_measure_diameter(target):
+    if target is None:
+        return None
+
+    diameter = target.get("raw_refined_diameter")
+    if diameter is None:
+        diameter = target.get("refined_diameter")
+    if diameter is None and ("w" in target) and ("h" in target):
+        diameter = max(target["w"], target["h"])
+    if diameter is None:
+        return None
+    return int(diameter)
+
+
+def target_measure_center(target):
+    if target is None:
+        return None, None
+
+    cx = target.get("measure_cx", target.get("cx"))
+    cy = target.get("measure_cy", target.get("cy"))
+    if cx is None or cy is None:
+        return None, None
+    return int(cx), int(cy)
+
+
+def is_ultra_close_tennis_candidate(target):
+    if target is None:
+        return False
+
+    raw_dist_cm = target_raw_distance_cm(target)
+    if (raw_dist_cm is not None) and (raw_dist_cm <= CLOSE_REFINE_DUPLICATE_DISTANCE_CM):
+        return True
+    if int(target.get("close_fit", 0)):
+        return True
+    return is_close_range_candidate(target)
+
+
+def measure_source_rank(target):
+    src = str(target.get("measure_src", ""))
+    if src == "hough_close":
+        return 5
+    if src == "mix_close":
+        return 4
+    if src == "hough":
+        return 4
+    if src == "mix":
+        return 3
+    if src == "lab_close":
+        return 2
+    if src == "lab":
+        return 1
+    if src == "bbox_close":
+        return 1
+    return 0
+
+
+def close_refined_tennis_candidates_should_merge(a, b):
+    if a is None or b is None:
+        return False
+    if not (is_ultra_close_tennis_candidate(a) or is_ultra_close_tennis_candidate(b)):
+        return False
+
+    ax, ay = target_measure_center(a)
+    bx, by = target_measure_center(b)
+    if ax is None or ay is None or bx is None or by is None:
+        return False
+
+    dia_a = target_measure_diameter(a)
+    dia_b = target_measure_diameter(b)
+    if dia_a is None or dia_b is None:
+        return False
+
+    center_dx = abs(ax - bx)
+    center_dy = abs(ay - by)
+    min_d = max(1, min(dia_a, dia_b))
+    max_d = max(dia_a, dia_b)
+    center_gate = max(
+        CLOSE_REFINE_DUPLICATE_CENTER_MIN,
+        (min_d * CLOSE_REFINE_DUPLICATE_CENTER_RATIO_PCT) // 100,
+    )
+    loose_gate = max(center_gate + 4, (max_d * CLOSE_REFINE_DUPLICATE_CENTER_RATIO_PCT) // 100)
+    ratio_pct = (max_d * 100) // max(1, min_d)
+
+    rect_a = (a["x"], a["y"], a["w"], a["h"])
+    rect_b = (b["x"], b["y"], b["w"], b["h"])
+    contains = rect_contains_point(rect_a, bx, by, CLOSE_REFINE_DUPLICATE_CENTER_PAD) or rect_contains_point(
+        rect_b, ax, ay, CLOSE_REFINE_DUPLICATE_CENTER_PAD
+    )
+    overlap = rect_iou(rect_a, rect_b)
+
+    dist_close = True
+    dist_a = target_raw_distance_cm(a)
+    dist_b = target_raw_distance_cm(b)
+    if dist_a is not None and dist_b is not None:
+        dist_close = abs(dist_a - dist_b) <= CLOSE_REFINE_DUPLICATE_DIST_DIFF_CM
+
+    similar_size = ratio_pct <= CLOSE_REFINE_DUPLICATE_DIAMETER_RATIO_MAX_PCT
+    if (center_dx <= center_gate) and (center_dy <= center_gate) and similar_size:
+        return True
+    if contains and (center_dx <= loose_gate) and (center_dy <= loose_gate):
+        return dist_close or similar_size or (overlap > 0.0)
+    if (overlap >= FOMO_DUPLICATE_CLOSE_IOU) and (center_dx <= loose_gate) and (center_dy <= loose_gate):
+        return dist_close and similar_size
+    return False
+
+
+def select_close_refined_tennis_representative(group):
+    if len(group) == 1:
+        merged = group[0].copy()
+        merged["merge_count"] = int(group[0].get("merge_count", 1))
+        return merged
+
+    best = None
+    best_key = None
+    merge_count = 0
+
+    for cand in group:
+        merge_count += int(cand.get("merge_count", 1))
+        raw_dist_cm = target_raw_distance_cm(cand)
+        if raw_dist_cm is None:
+            raw_dist_cm = 9999.0
+        diameter = target_measure_diameter(cand)
+        if diameter is None:
+            diameter = 0
+        key = (
+            -int(cand.get("cue_conf", 0)),
+            -measure_source_rank(cand),
+            raw_dist_cm,
+            -diameter,
+            -(cand["w"] * cand["h"]),
+            -int(cand.get("score", 0) * 1000),
+        )
+        if best_key is None or key < best_key:
+            best_key = key
+            best = cand
+
+    merged = best.copy()
+    merged["merge_count"] = max(1, merge_count)
+    return merged
+
+
+def dedupe_close_refined_tennis_candidates(candidates):
+    if len(candidates) <= 1:
+        merged = []
+        for cand in candidates:
+            item = cand.copy()
+            item["merge_count"] = int(cand.get("merge_count", 1))
+            merged.append(item)
+        return merged
+
+    used = [False] * len(candidates)
+    merged = []
+
+    for i in range(len(candidates)):
+        if used[i]:
+            continue
+
+        group = [candidates[i]]
+        used[i] = True
+        expanded = True
+        while expanded:
+            expanded = False
+            for j in range(len(candidates)):
+                if used[j]:
+                    continue
+                for saved in group:
+                    if close_refined_tennis_candidates_should_merge(saved, candidates[j]):
+                        group.append(candidates[j])
+                        used[j] = True
+                        expanded = True
+                        break
+
+        merged.append(select_close_refined_tennis_representative(group))
+
+    return merged
 
 
 def tennis_candidates_should_merge(a, b):
@@ -1244,8 +1425,8 @@ def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glar
 
     r_guess = max(3, r_guess)
     if close_mode:
-        r_min = max(4, (r_guess * 6) // 10)
-        r_max = min(CLOSE_HOUGH_R_MAX, (r_guess * 15) // 10)
+        r_min = max(4, (r_guess * 7) // 10)
+        r_max = min(CLOSE_HOUGH_R_MAX, (r_guess * 13) // 10)
         x_margin = CLOSE_HOUGH_X_MARGIN
         y_margin = CLOSE_HOUGH_Y_MARGIN
         r_margin = CLOSE_HOUGH_R_MARGIN
@@ -1286,7 +1467,10 @@ def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glar
         dy = c.y() - ref_cy
         center_cost = abs(dx) + abs(dy)
         radius_cost = abs(c.r() - r_guess)
-        score = (center_cost * 2) + radius_cost - (c.r() // (5 if close_mode else 4))
+        if close_mode:
+            score = (center_cost * 3) + (radius_cost * 2)
+        else:
+            score = (center_cost * 2) + radius_cost - (c.r() // 4)
         if (best_score is None) or (score < best_score):
             best_score = score
             best = c
@@ -1320,50 +1504,50 @@ def estimate_tennis_diameter(img, x, y, w, h, allow_hough=True, close_mode=False
     )
 
     hough_d = None
-    if allow_hough:
+    hough_cx = cx
+    hough_cy = cy
+    use_hough = allow_hough or close_mode
+    if use_hough:
         edge_strength = estimate_edge_strength(img, roi)
         glare_ratio_pct = estimate_glare_ratio_pct(img, roi)
         if color_d is not None:
             hough_guess = max(color_d // 2, bbox_d // 2)
         else:
             hough_guess = max(5, (bbox_d * 8) // 10)
-        hough_d, _, _ = estimate_hough_circle(
+        hough_d, hough_cx, hough_cy = estimate_hough_circle(
             img, roi, color_cx, color_cy, hough_guess, edge_strength, glare_ratio_pct, close_mode=close_mode
         )
     else:
         glare_ratio_pct = 0
 
     cue_conf = 0
-    trusted_color = (
-        (color_roundness is not None)
-        and (color_density is not None)
-        and (color_roundness >= 0.55)
-        and (color_density >= 0.55)
-    )
+    measure_src = "bbox_close" if close_mode else "bbox"
     if (hough_d is not None) and (color_d is not None):
         delta = abs(hough_d - color_d)
         if close_mode:
-            if delta <= 14:
-                d = ((hough_d * 4) + (color_d * 6)) // 10
+            if delta <= 10:
+                d = ((hough_d * 8) + (color_d * 2)) // 10
                 cue_conf = 2
-            elif trusted_color:
-                d = color_d
-                cue_conf = 1
             else:
-                d = ((hough_d * 7) + (color_d * 3)) // 10
-                cue_conf = 1
+                d = hough_d
+                cue_conf = 2
+            measure_src = "mix_close" if delta <= 10 else "hough_close"
         elif delta <= 10:
             d = ((hough_d * 5) + (color_d * 5)) // 10
             cue_conf = 2
+            measure_src = "mix"
         else:
             d = max(hough_d, color_d)
             cue_conf = 1
+            measure_src = "hough"
     elif hough_d is not None:
         d = hough_d
-        cue_conf = 1
+        cue_conf = 2 if close_mode else 1
+        measure_src = "hough_close" if close_mode else "hough"
     elif color_d is not None:
         d = color_d
         cue_conf = 1
+        measure_src = "lab_close" if close_mode else "lab"
     else:
         d = int((bbox_d * 13) // 10)
         cue_conf = 0
@@ -1375,8 +1559,20 @@ def estimate_tennis_diameter(img, x, y, w, h, allow_hough=True, close_mode=False
         if d > glare_cap:
             d = glare_cap
         cue_conf = min(cue_conf, 1)
+        if hough_d is None:
+            measure_src = "lab_close" if color_d is not None and close_mode else measure_src
+            measure_src = "lab" if color_d is not None and not close_mode else measure_src
 
-    return d, cue_conf
+    measure_cx = cx
+    measure_cy = cy
+    if hough_d is not None:
+        measure_cx = hough_cx
+        measure_cy = hough_cy
+    elif color_d is not None:
+        measure_cx = color_cx
+        measure_cy = color_cy
+
+    return d, cue_conf, measure_src, measure_cx, measure_cy
 
 
 def estimate_ball_radius(w, h):
@@ -1390,14 +1586,21 @@ def estimate_ball_radius(w, h):
     return clamp(r, 4, 55)
 
 
-def fuse_tennis_radius(w, h, detected_diameter):
-    circle_r = detected_diameter // 2
-    bbox_r = estimate_ball_radius(w, h)
-    if max(w, h) >= 20:
+def fuse_tennis_radius(w, h, detected_diameter, close_mode=False):
+    circle_r = max(4, detected_diameter // 2)
+    long_side = max(w, h)
+    if close_mode:
+        r = circle_r
+        scale = CLOSE_DRAW_RADIUS_SCALE
+    elif long_side >= 20:
+        bbox_r = estimate_ball_radius(w, h)
         r = max(circle_r, bbox_r)
+        scale = DRAW_RADIUS_SCALE
     else:
+        bbox_r = estimate_ball_radius(w, h)
         r = max(circle_r, (bbox_r * 9) // 10)
-    r = int((r * DRAW_RADIUS_SCALE) + 0.5)
+        scale = DRAW_RADIUS_SCALE
+    r = int((r * scale) + 0.5)
     return clamp(r, 4, 105)
 
 
@@ -1984,8 +2187,8 @@ def update_servo_tracking(target, img):
     if -SERVO_DEADBAND < tilt_error < SERVO_DEADBAND:
         tilt_error = 0
 
-    pan_output = pan_pid.get_pid(pan_error, 1) / 2
-    tilt_output = tilt_pid.get_pid(tilt_error, 1)
+    pan_output = (pan_pid.get_pid(pan_error, 1) / 2) * SERVO_SPEED_SCALE
+    tilt_output = tilt_pid.get_pid(tilt_error, 1) * SERVO_SPEED_SCALE
 
     apply_pan_delta(-pan_output, TRACK_PAN_MAX_STEP)
     apply_tilt_delta(tilt_output, TRACK_TILT_MAX_STEP)
@@ -2003,7 +2206,7 @@ def update_tilt_tracking(target, img):
     if -SERVO_DEADBAND < tilt_error < SERVO_DEADBAND:
         tilt_error = 0
 
-    tilt_output = tilt_pid.get_pid(tilt_error, 1)
+    tilt_output = tilt_pid.get_pid(tilt_error, 1) * SERVO_SPEED_SCALE
     apply_tilt_delta(tilt_output, TRACK_TILT_MAX_STEP)
 
 
@@ -2764,12 +2967,18 @@ def estimate_distance(pixel_diameter, image_width=320):
     return distance_mm / 10.0
 
 
-def estimate_corrected_distance_cm(pixel_diameter, radius):
+def estimate_scaled_distance_cm(pixel_diameter):
     base_distance_cm = estimate_distance(pixel_diameter)
     if base_distance_cm is None:
         return None
-    corrected = base_distance_cm * DISTANCE_SCALE
-    return correct_tennis_distance(corrected, radius)
+    return base_distance_cm * DISTANCE_SCALE
+
+
+def estimate_corrected_distance_cm(pixel_diameter, radius):
+    scaled_distance_cm = estimate_scaled_distance_cm(pixel_diameter)
+    if scaled_distance_cm is None:
+        return None
+    return correct_tennis_distance(scaled_distance_cm, radius)
 
 
 def refine_tennis_target(img, target, allow_hough=None):
@@ -2786,7 +2995,8 @@ def refine_tennis_target(img, target, allow_hough=None):
         allow_hough = (frame_index % HOUGH_INTERVAL) == 0
     prev_radius = target.get("refined_radius")
     close_mode = is_close_range_candidate(target)
-    diameter, cue_conf = estimate_tennis_diameter(
+    # 近球始终优先跑霍夫圆，避免用依赖半径的距离估计反过来决定半径策略。
+    diameter, cue_conf, measure_src, measure_cx, measure_cy = estimate_tennis_diameter(
         img,
         target["x"],
         target["y"],
@@ -2795,10 +3005,11 @@ def refine_tennis_target(img, target, allow_hough=None):
         allow_hough=allow_hough,
         close_mode=close_mode,
     )
-    raw_radius = fuse_tennis_radius(target["w"], target["h"], diameter)
+    raw_radius = fuse_tennis_radius(target["w"], target["h"], diameter, close_mode=close_mode)
     filtered_diameter, refined_radius = update_trimmed_tennis_measure(target, diameter, raw_radius)
     refined_radius = smooth_ball_radius(refined_radius, prev_radius)
 
+    raw_dist_cm = estimate_scaled_distance_cm(diameter)
     refined_dist_cm = estimate_corrected_distance_cm(filtered_diameter, refined_radius)
     prev_dist_cm = target.get("refined_dist_cm")
     if (prev_dist_cm is not None) and (refined_dist_cm is not None):
@@ -2811,16 +3022,12 @@ def refine_tennis_target(img, target, allow_hough=None):
     target["refined_diameter"] = filtered_diameter
     target["raw_refined_diameter"] = diameter
     target["raw_refined_radius"] = raw_radius
+    target["raw_dist_cm"] = raw_dist_cm
     target["cue_conf"] = cue_conf
     target["close_fit"] = 1 if close_mode else 0
-    if allow_hough and cue_conf >= 2:
-        target["measure_src"] = "mix_close" if close_mode else "mix"
-    elif allow_hough and cue_conf >= 1:
-        target["measure_src"] = "hough_close" if close_mode else "hough"
-    elif cue_conf >= 1:
-        target["measure_src"] = "lab_close" if close_mode else "lab"
-    else:
-        target["measure_src"] = "bbox_close" if close_mode else "bbox"
+    target["measure_src"] = measure_src
+    target["measure_cx"] = measure_cx
+    target["measure_cy"] = measure_cy
     return target
 
 
@@ -3070,6 +3277,7 @@ def main_loop():
             )
             if refine_all_tennis:
                 tennis_candidates = refine_tennis_candidates(img, tennis_candidates, allow_hough=True)
+                tennis_candidates = dedupe_close_refined_tennis_candidates(tennis_candidates)
 
             seek_track_enabled = detect_tennis and (pick_substate == PICK_TRACK)
             tennis_target = match_tennis_track(tennis_candidates) if seek_track_enabled else None
