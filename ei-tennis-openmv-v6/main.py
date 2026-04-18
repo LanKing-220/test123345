@@ -47,7 +47,7 @@ HOST_CTRL_ACTIONS = (
     HOST_CTRL_ACTION_MODE_PLAY,
 )
 
-THRESH_TENNIS = 0.50
+THRESH_TENNIS = 0.4
 # 人和球拍更容易误触发，阈值调高后会更保守，降低敏感度。
 THRESH_PLAYER = 0.75
 THRESH_RACKET = 0.70
@@ -135,6 +135,7 @@ NEAREST_SWITCH_MARGIN_CM = 6.0
 NEAREST_SWITCH_CONFIRM_FRAMES = 2
 PICK_CONFIRM_DURATION_MS = 2000
 TARGET_LOST_TIMEOUT_MS = 2000
+PICK_TRACK_LOST_CONSECUTIVE_TH = 10
 PLAY_RACKET_CONFIRM_FRAMES = 2
 RACKET_LINK_MARGIN_X_RATIO = 0.60
 RACKET_LINK_MARGIN_Y_RATIO = 0.35
@@ -199,6 +200,7 @@ scan_tilt_reset_pending = False
 pick_confirm_start_ms = 0
 last_tennis_seen_ms = 0
 last_player_seen_ms = 0
+pick_track_lost_count = 0
 picker_feedback_pin = None
 picker_feedback_state = 0
 picker_uart_done_pending = 0
@@ -265,6 +267,12 @@ GLARE_L_TH = 88
 GLARE_RATIO_TH_PCT = 18
 SMALL_BALL_SIZE_TH = 24
 GLARE_DIAMETER_CAP_PCT = 115
+FAR_BALL_SIZE_TH = 16
+FAR_BALL_HOUGH_R_MAX = 20
+FAR_BALL_DIAMETER_RATIO_MIN_PCT = 70
+FAR_BALL_DIAMETER_RATIO_MAX_PCT = 150
+GENERAL_DIAMETER_RATIO_MIN_PCT = 65
+GENERAL_DIAMETER_RATIO_MAX_PCT = 190
 
 FOMO_HEATMAP_AREA_TH = 2
 FOMO_HEATMAP_PIXELS_TH = 2
@@ -797,8 +805,22 @@ def tennis_center_is_green(img, x, y, w, h):
         white_pixels += blob.pixels()
 
     roi_pixels = max(1, roi[2] * roi[3])
+    small_target = max(w, h) <= FAR_BALL_SIZE_TH
     green_ratio_pct = (green_pixels * 100) // roi_pixels
     white_ratio_pct = (white_pixels * 100) // roi_pixels
+
+    if small_target:
+        green_ratio_min_pct = max(6, TENNIS_CENTER_GREEN_RATIO_MIN_PCT - 6)
+        strong_green_min_pct = max(12, TENNIS_CENTER_GREEN_STRONG_RATIO_PCT - 6)
+        white_ratio_min_pct = TENNIS_CENTER_WHITE_RATIO_MIN_PCT + 8
+        white_strong_min_pct = TENNIS_CENTER_WHITE_STRONG_RATIO_PCT + 6
+        white_dom_margin_pct = TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT + 8
+    else:
+        green_ratio_min_pct = TENNIS_CENTER_GREEN_RATIO_MIN_PCT
+        strong_green_min_pct = TENNIS_CENTER_GREEN_STRONG_RATIO_PCT
+        white_ratio_min_pct = TENNIS_CENTER_WHITE_RATIO_MIN_PCT
+        white_strong_min_pct = TENNIS_CENTER_WHITE_STRONG_RATIO_PCT
+        white_dom_margin_pct = TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT
 
     mean_green = (
         (TENNIS_CENTER_GREEN_L_MIN <= l_mean <= TENNIS_CENTER_GREEN_L_MAX)
@@ -808,7 +830,7 @@ def tennis_center_is_green(img, x, y, w, h):
         and (chroma >= TENNIS_CENTER_GREEN_CHROMA_MIN)
     )
 
-    strong_green = (green_ratio_pct >= TENNIS_CENTER_GREEN_STRONG_RATIO_PCT) and (
+    strong_green = (green_ratio_pct >= strong_green_min_pct) and (
         green_bias >= TENNIS_CENTER_GREEN_BIAS_MIN
     )
     mean_white = (
@@ -818,14 +840,32 @@ def tennis_center_is_green(img, x, y, w, h):
         and (chroma <= TENNIS_CENTER_WHITE_CHROMA_MAX)
         and (green_bias <= TENNIS_CENTER_WHITE_GREEN_BIAS_MAX)
     )
-    white_dominant = (white_ratio_pct >= TENNIS_CENTER_WHITE_RATIO_MIN_PCT) and (
-        white_ratio_pct >= (green_ratio_pct + TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT)
+    white_dominant = (white_ratio_pct >= white_ratio_min_pct) and (
+        white_ratio_pct >= (green_ratio_pct + white_dom_margin_pct)
     )
-    if (mean_white and (white_ratio_pct >= TENNIS_CENTER_WHITE_RATIO_MIN_PCT)) or white_dominant:
+    if (mean_white and (white_ratio_pct >= white_ratio_min_pct)) or white_dominant:
         return False
-    if white_ratio_pct >= TENNIS_CENTER_WHITE_STRONG_RATIO_PCT:
+    if white_ratio_pct >= white_strong_min_pct:
         return False
-    return (mean_green and (green_ratio_pct >= TENNIS_CENTER_GREEN_RATIO_MIN_PCT)) or strong_green
+    return (mean_green and (green_ratio_pct >= green_ratio_min_pct)) or strong_green
+
+
+def clamp_diameter_by_bbox(diameter, bbox_d, close_mode=False):
+    bbox_d = max(3, int(bbox_d))
+    if close_mode:
+        min_ratio = max(60, GENERAL_DIAMETER_RATIO_MIN_PCT - 5)
+        max_ratio = min(210, GENERAL_DIAMETER_RATIO_MAX_PCT + 15)
+    else:
+        min_ratio = GENERAL_DIAMETER_RATIO_MIN_PCT
+        max_ratio = GENERAL_DIAMETER_RATIO_MAX_PCT
+
+    if bbox_d <= FAR_BALL_SIZE_TH:
+        min_ratio = max(min_ratio, FAR_BALL_DIAMETER_RATIO_MIN_PCT)
+        max_ratio = min(max_ratio, FAR_BALL_DIAMETER_RATIO_MAX_PCT)
+
+    d_min = max(4, (bbox_d * min_ratio) // 100)
+    d_max = max(d_min, (bbox_d * max_ratio) // 100)
+    return int(clamp(diameter, d_min, d_max))
 
 
 def target_center_error(target, img):
@@ -1199,7 +1239,7 @@ def merge_tennis_candidate_group(group, img_w, img_h):
         "y": top,
         "cx": merged_cx,
         "cy": merged_cy,
-        "radius": max(8, min(50, estimate_ball_radius(merged_w, merged_h))),
+        "radius": max(4, min(55, estimate_ball_radius(merged_w, merged_h))),
         "w": merged_w,
         "h": merged_h,
         "score": best_score,
@@ -1247,12 +1287,13 @@ def merge_duplicate_tennis_candidates(candidates, img_w, img_h):
     return merged
 
 
-def correct_tennis_distance(distance_cm, radius):
-    if radius >= 50:
+def correct_tennis_distance(distance_cm, pixel_diameter):
+    # 距离修正仅依赖像素直径，不使用拟合半径作为参考。
+    if pixel_diameter >= 46:
         factor = 1.10
-    elif radius >= 42:
+    elif pixel_diameter >= 34:
         factor = 1.15
-    elif radius >= 36:
+    elif pixel_diameter >= 24:
         factor = 1.20
     else:
         factor = 1.25
@@ -1427,7 +1468,17 @@ def estimate_glare_ratio_pct(img, roi):
     return (bright_pixels * 100) // roi_pixels
 
 
-def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glare_ratio_pct, close_mode=False):
+def estimate_hough_circle(
+    img,
+    roi,
+    ref_cx,
+    ref_cy,
+    r_guess,
+    edge_strength,
+    glare_ratio_pct,
+    close_mode=False,
+    bbox_d=0,
+):
     if glare_ratio_pct >= GLARE_RATIO_TH_PCT:
         hough_threshold = 3300 if edge_strength >= 24 else 2900
     else:
@@ -1456,6 +1507,19 @@ def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glar
 
     if glare_ratio_pct >= GLARE_RATIO_TH_PCT:
         r_max = max(r_min, (r_max * 9) // 10)
+
+    if (not close_mode) and (bbox_d > 0) and (bbox_d <= FAR_BALL_SIZE_TH):
+        # 远距离小球时，限制霍夫半径，避免高亮区域被拟合成超大光圈。
+        far_r_min = max(2, (bbox_d * FAR_BALL_DIAMETER_RATIO_MIN_PCT) // 200)
+        far_r_max = max(
+            far_r_min,
+            min(FAR_BALL_HOUGH_R_MAX, (bbox_d * FAR_BALL_DIAMETER_RATIO_MAX_PCT) // 200),
+        )
+        r_min = max(r_min, far_r_min)
+        r_max = min(r_max, far_r_max)
+
+    if r_max < r_min:
+        return None, ref_cx, ref_cy
 
     circles = img.find_circles(
         roi=roi,
@@ -1528,7 +1592,15 @@ def estimate_tennis_diameter(img, x, y, w, h, allow_hough=True, close_mode=False
         else:
             hough_guess = max(5, (bbox_d * 8) // 10)
         hough_d, hough_cx, hough_cy = estimate_hough_circle(
-            img, roi, color_cx, color_cy, hough_guess, edge_strength, glare_ratio_pct, close_mode=close_mode
+            img,
+            roi,
+            color_cx,
+            color_cy,
+            hough_guess,
+            edge_strength,
+            glare_ratio_pct,
+            close_mode=close_mode,
+            bbox_d=bbox_d,
         )
     else:
         glare_ratio_pct = 0
@@ -1565,7 +1637,8 @@ def estimate_tennis_diameter(img, x, y, w, h, allow_hough=True, close_mode=False
         d = int((bbox_d * 13) // 10)
         cue_conf = 0
 
-    d = clamp(d, 8, 210)
+    d = clamp(d, 4, 210)
+    d = clamp_diameter_by_bbox(d, bbox_d, close_mode=close_mode)
 
     if (ball_size <= SMALL_BALL_SIZE_TH) and (glare_ratio_pct >= GLARE_RATIO_TH_PCT):
         glare_cap = max(8, (bbox_d * GLARE_DIAMETER_CAP_PCT) // 100)
@@ -1779,8 +1852,8 @@ def refresh_scan_target_measure(target, sample_target=None):
         target["refined_diameter"] = lock_diameter
 
     lock_dist_cm = None
-    if (lock_diameter is not None) and (lock_radius is not None):
-        lock_dist_cm = estimate_corrected_distance_cm(lock_diameter, lock_radius)
+    if lock_diameter is not None:
+        lock_dist_cm = estimate_corrected_distance_cm(lock_diameter)
     if lock_dist_cm is None:
         lock_dist_cm = target.get("dist_cm")
 
@@ -2049,8 +2122,8 @@ def match_tennis_track(candidates):
         )
         if filtered_radius is not None:
             tracked_tennis["radius"] = filtered_radius
-        if (filtered_diameter is not None) and (filtered_radius is not None):
-            tracked_tennis["dist_cm"] = estimate_corrected_distance_cm(filtered_diameter, filtered_radius)
+        if filtered_diameter is not None:
+            tracked_tennis["dist_cm"] = estimate_corrected_distance_cm(filtered_diameter)
             tracked_tennis["refined_dist_cm"] = tracked_tennis["dist_cm"]
     tracked_tennis["miss"] = 0
     return tracked_tennis
@@ -2098,7 +2171,7 @@ def draw_active_target(img, target, mode_name, state_name):
 
     cx = clamp(target["cx"], 0, img.width() - 1)
     cy = clamp(target["cy"], 0, img.height() - 1)
-    radius = clamp(target["radius"], 8, 50)
+    radius = clamp(target["radius"], 4, 55)
     kind = target.get("kind", "target").lower()
 
     if kind == "tennis":
@@ -2389,7 +2462,7 @@ def begin_scan_round():
     global pick_substate, scan_seek_left, scan_direction, scan_lock_count
     global nearest_switch_count, best_scan_tennis, tracked_tennis
     global scan_ranked_tennis, scan_candidate_index, pick_confirm_start_ms, last_tennis_seen_ms
-    global scan_tilt_reset_pending
+    global scan_tilt_reset_pending, pick_track_lost_count
 
     pick_substate = PICK_SCAN
     scan_seek_left = True
@@ -2403,6 +2476,7 @@ def begin_scan_round():
     tracked_tennis = None
     pick_confirm_start_ms = 0
     last_tennis_seen_ms = 0
+    pick_track_lost_count = 0
 
 
 def update_global_scan(img, tennis_candidates):
@@ -2632,7 +2706,7 @@ def enter_pick_mode():
     global scan_ranked_tennis, scan_candidate_index
     global scan_seek_left, scan_direction, pick_confirm_start_ms, current_racket_id
     global scan_tilt_reset_pending
-    global last_tennis_seen_ms, last_player_seen_ms
+    global last_tennis_seen_ms, last_player_seen_ms, pick_track_lost_count
 
     mode = MODE_PICK
     pick_substate = PICK_SCAN
@@ -2657,6 +2731,7 @@ def enter_pick_mode():
     current_racket_id = 0
     last_tennis_seen_ms = 0
     last_player_seen_ms = 0
+    pick_track_lost_count = 0
 
 
 def enter_play_mode():
@@ -2664,7 +2739,7 @@ def enter_play_mode():
     global player_locked, balls_served, scan_lock_count, nearest_switch_count, play_ready_frames
     global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player, current_racket_id
     global scan_ranked_tennis, scan_candidate_index
-    global scan_direction, pick_confirm_start_ms, last_tennis_seen_ms, last_player_seen_ms
+    global scan_direction, pick_confirm_start_ms, last_tennis_seen_ms, last_player_seen_ms, pick_track_lost_count
 
     mode = MODE_PLAY
     pick_substate = PICK_SCAN
@@ -2687,6 +2762,7 @@ def enter_play_mode():
     current_racket_id = 0
     last_tennis_seen_ms = 0
     last_player_seen_ms = 0
+    pick_track_lost_count = 0
 
 
 def run_state_machine(img, tennis_target, tennis_candidates, player_target, racket_candidates):
@@ -2695,6 +2771,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
     global scan_lock_count, nearest_switch_count, best_scan_tennis, tracked_tennis
     global scan_ranked_tennis, scan_candidate_index
     global pick_confirm_start_ms, current_racket_id, last_tennis_seen_ms, last_player_seen_ms
+    global pick_track_lost_count
 
     command_event = None
     racket_target = choose_racket_target(racket_candidates, player_target)
@@ -2796,6 +2873,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
                 tracked_tennis["miss"] = 0
                 pick_confirm_start_ms = 0
                 last_tennis_seen_ms = now_ms
+                pick_track_lost_count = 0
                 pick_substate = PICK_TRACK
                 return tracked_tennis, "SEEK", "TRACK", racket_present, racket_target, command_event
 
@@ -2815,11 +2893,14 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
 
         if is_live_target(active_target):
             last_tennis_seen_ms = now_ms
+            pick_track_lost_count = 0
             update_target_lock_pan(active_target, img)
             update_servo_tracking(active_target, img)
-        elif target_lost_timeout(last_tennis_seen_ms, now_ms):
-            begin_scan_round()
-            return None, "SEEK", "SCAN", racket_present, racket_target, command_event
+        else:
+            pick_track_lost_count += 1
+            if pick_track_lost_count >= PICK_TRACK_LOST_CONSECUTIVE_TH:
+                begin_scan_round()
+                return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
         picker_done = read_picker_feedback()
 
@@ -2981,11 +3062,11 @@ def estimate_scaled_distance_cm(pixel_diameter):
     return base_distance_cm * DISTANCE_SCALE
 
 
-def estimate_corrected_distance_cm(pixel_diameter, radius):
+def estimate_corrected_distance_cm(pixel_diameter):
     scaled_distance_cm = estimate_scaled_distance_cm(pixel_diameter)
     if scaled_distance_cm is None:
         return None
-    return correct_tennis_distance(scaled_distance_cm, radius)
+    return correct_tennis_distance(scaled_distance_cm, pixel_diameter)
 
 
 def refine_tennis_target(img, target, allow_hough=None):
@@ -3017,7 +3098,7 @@ def refine_tennis_target(img, target, allow_hough=None):
     refined_radius = smooth_ball_radius(refined_radius, prev_radius)
 
     raw_dist_cm = estimate_scaled_distance_cm(diameter)
-    refined_dist_cm = estimate_corrected_distance_cm(filtered_diameter, refined_radius)
+    refined_dist_cm = estimate_corrected_distance_cm(filtered_diameter)
     prev_dist_cm = target.get("refined_dist_cm")
     if (prev_dist_cm is not None) and (refined_dist_cm is not None):
         refined_dist_cm = (prev_dist_cm * 0.7) + (refined_dist_cm * 0.3)
@@ -3215,7 +3296,7 @@ def main_loop():
                     if detect_tennis and is_tennis:
                         if not tennis_center_is_green(img, x, y, w, h):
                             continue
-                        radius = max(8, min(40, int(max(w, h) * 0.7)))
+                        radius = max(4, min(40, int(max(w, h) * 0.7)))
                         dist_cm = estimate_distance(max(w, h), image_width=img.width())
                         tennis_candidates.append(
                             {
