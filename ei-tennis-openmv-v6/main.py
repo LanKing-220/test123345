@@ -88,7 +88,7 @@ grid_mask = None
 grid_overlay_ready = False
 
 TRACK_MAX_MISS = 8
-TENNIS_TRACK_MAX_MISS = 20
+TENNIS_TRACK_MAX_MISS = 30
 PLAYER_TRACK_MAX_MISS = 8
 TRACK_GATE_MIN = 28
 TRACK_SMOOTH_OLD_NUM = 7
@@ -137,12 +137,11 @@ PICK_CONFIRM_MAX_FRAMES = 20
 PICK_EARLY_LOCK_WINDOW_FRAMES = 10
 PICK_EARLY_LOCK_SEEN_FRAMES = 4
 PICK_FINAL_LOCK_MIN_SEEN_FRAMES = 7
+PICK_SCAN_FAIL_ROUNDS_TO_PLAY = 3
 CAPTURE_DISTANCE_CM = 10.0
 CAPTURE_HOLD_FRAMES = 8
 NEAREST_SWITCH_MARGIN_CM = 6.0
 NEAREST_SWITCH_CONFIRM_FRAMES = 2
-PICK_CONFIRM_DURATION_MS = 2000
-TARGET_LOST_TIMEOUT_MS = 2000
 PICK_TRACK_LOST_CONSECUTIVE_TH = 30
 PLAY_RACKET_CONFIRM_FRAMES = 2
 RACKET_LINK_MARGIN_X_RATIO = 0.60
@@ -210,7 +209,7 @@ scan_tilt_reset_pending = False
 pick_confirm_start_ms = 0
 pick_confirm_total_frames = 0
 pick_confirm_seen_frames = 0
-last_player_seen_ms = 0
+pick_scan_fail_rounds = 0
 pick_track_lost_count = 0
 picker_feedback_pin = None
 picker_feedback_state = 0
@@ -227,7 +226,7 @@ host_mode_switch_pending = -1
 ENABLE_TENNIS_REFINEMENT = True
 HOUGH_INTERVAL = 3
 DISTANCE_SCALE = 2.15
-DISTANCE_OUTPUT_SCALE = 0.8
+DISTANCE_OUTPUT_SCALE = 0.65
 REFINE_ALL_TENNIS_IN_PICK_SCAN = True
 MEASURE_WINDOW_LEN = 10
 MEASURE_TRIM_COUNT = 2
@@ -1972,12 +1971,6 @@ def is_live_target(target):
     return target is not None and target.get("miss", 0) == 0
 
 
-def target_lost_timeout(last_seen_ms, now_ms):
-    if last_seen_ms <= 0:
-        return True
-    return time.ticks_diff(now_ms, last_seen_ms) >= TARGET_LOST_TIMEOUT_MS
-
-
 def reset_pick_confirm_window():
     global pick_confirm_start_ms, pick_confirm_total_frames, pick_confirm_seen_frames
 
@@ -2000,6 +1993,31 @@ def pick_confirm_ready_to_lock():
     if pick_confirm_total_frames > PICK_EARLY_LOCK_WINDOW_FRAMES:
         return False
     return pick_confirm_seen_frames >= PICK_EARLY_LOCK_SEEN_FRAMES
+
+
+def reset_pick_scan_fail_rounds():
+    global pick_scan_fail_rounds
+
+    pick_scan_fail_rounds = 0
+
+
+def handle_pick_scan_round_failed(racket_present, racket_target, command_event):
+    global pick_scan_fail_rounds
+
+    pick_scan_fail_rounds += 1
+    if pick_scan_fail_rounds >= PICK_SCAN_FAIL_ROUNDS_TO_PLAY:
+        enter_play_mode()
+        return None, "PLAY", "TRACK_P", False, None, command_event
+
+    begin_scan_round()
+    return None, "SEEK", "SCAN", racket_present, racket_target, command_event
+
+
+def clear_pick_unlock_events():
+    global picker_uart_done_pending, host_track_unlock_pending
+
+    picker_uart_done_pending = 0
+    host_track_unlock_pending = 0
 
 
 def is_racket_linked_to_player(player_target, racket_target):
@@ -2776,7 +2794,7 @@ def enter_pick_mode():
     global scan_ranked_tennis, scan_candidate_index
     global scan_seek_left, scan_direction, pick_confirm_start_ms, current_racket_id
     global scan_tilt_reset_pending
-    global last_player_seen_ms, pick_track_lost_count
+    global pick_track_lost_count, pick_scan_fail_rounds
 
     mode = MODE_PICK
     pick_substate = PICK_SCAN
@@ -2799,8 +2817,8 @@ def enter_pick_mode():
     scan_direction = 1
     reset_pick_confirm_window()
     current_racket_id = 0
-    last_player_seen_ms = 0
     pick_track_lost_count = 0
+    pick_scan_fail_rounds = 0
 
 
 def enter_play_mode():
@@ -2808,7 +2826,7 @@ def enter_play_mode():
     global player_locked, balls_served, scan_lock_count, nearest_switch_count, play_ready_frames
     global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player, current_racket_id
     global scan_ranked_tennis, scan_candidate_index
-    global scan_direction, pick_confirm_start_ms, last_player_seen_ms, pick_track_lost_count
+    global scan_direction, pick_confirm_start_ms, pick_track_lost_count, pick_scan_fail_rounds
 
     mode = MODE_PLAY
     pick_substate = PICK_SCAN
@@ -2829,8 +2847,8 @@ def enter_play_mode():
     tracked_tennis = None
     tracked_player = None
     current_racket_id = 0
-    last_player_seen_ms = 0
     pick_track_lost_count = 0
+    pick_scan_fail_rounds = 0
 
 
 def run_state_machine(img, tennis_target, tennis_candidates, player_target, racket_candidates):
@@ -2838,7 +2856,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
     global player_locked, balls_served, play_ready_frames, racket_seen_prev
     global scan_lock_count, nearest_switch_count, best_scan_tennis, tracked_tennis
     global scan_ranked_tennis, scan_candidate_index
-    global pick_confirm_start_ms, current_racket_id, last_player_seen_ms
+    global pick_confirm_start_ms, current_racket_id
     global pick_track_lost_count
 
     command_event = None
@@ -2892,15 +2910,14 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
                     reset_pick_confirm_window()
                     pick_substate = PICK_RETURN
                 else:
-                    begin_scan_round()
+                    return handle_pick_scan_round_failed(racket_present, racket_target, command_event)
             # 扫描阶段只记录候选，不提前锁定或显示跟踪目标。
             return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
         if pick_substate == PICK_RETURN:
             if best_scan_tennis is None:
                 if not select_scan_candidate(scan_candidate_index):
-                    begin_scan_round()
-                    return None, "SEEK", "SCAN", racket_present, racket_target, command_event
+                    return handle_pick_scan_round_failed(racket_present, racket_target, command_event)
 
             active_target = best_scan_tennis
             if update_return_to_saved_target():
@@ -2913,8 +2930,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
                 if select_next_scan_candidate():
                     pick_substate = PICK_RETURN
                     return best_scan_tennis, "SEEK", "RETURN", racket_present, racket_target, command_event
-                begin_scan_round()
-                return None, "SEEK", "SCAN", racket_present, racket_target, command_event
+                return handle_pick_scan_round_failed(racket_present, racket_target, command_event)
 
             confirmed_target = choose_local_nearest_tennis(best_scan_tennis, tennis_candidates)
             if confirmed_target is None:
@@ -2937,6 +2953,8 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
                 ensure_target_id(tracked_tennis, int(best_scan_tennis.get("id", 0)))
                 tracked_tennis["miss"] = 0
                 reset_pick_confirm_window()
+                reset_pick_scan_fail_rounds()
+                clear_pick_unlock_events()
                 pick_track_lost_count = 0
                 pick_substate = PICK_TRACK
                 return tracked_tennis, "SEEK", "TRACK", racket_present, racket_target, command_event
@@ -2947,6 +2965,8 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
                     ensure_target_id(tracked_tennis, int(best_scan_tennis.get("id", 0)))
                     tracked_tennis["miss"] = 0
                     reset_pick_confirm_window()
+                    reset_pick_scan_fail_rounds()
+                    clear_pick_unlock_events()
                     pick_track_lost_count = 0
                     pick_substate = PICK_TRACK
                     return tracked_tennis, "SEEK", "TRACK", racket_present, racket_target, command_event
@@ -2954,8 +2974,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
                 if select_next_scan_candidate():
                     pick_substate = PICK_RETURN
                     return best_scan_tennis, "SEEK", "RETURN", racket_present, racket_target, command_event
-                begin_scan_round()
-                return None, "SEEK", "SCAN", racket_present, racket_target, command_event
+                return handle_pick_scan_round_failed(racket_present, racket_target, command_event)
 
             return active_target, "SEEK", "CONFIRM", racket_present, racket_target, command_event
 
@@ -2978,6 +2997,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
         if unlock_pick_track:
             capture_flash_frames = CAPTURE_HOLD_FRAMES
             capture_cmd = 1
+            reset_pick_scan_fail_rounds()
             begin_scan_round()
             return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
@@ -2988,6 +3008,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
         else:
             pick_track_lost_count += 1
             if pick_track_lost_count >= PICK_TRACK_LOST_CONSECUTIVE_TH:
+                reset_pick_scan_fail_rounds()
                 begin_scan_round()
                 return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
@@ -2996,7 +3017,6 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
     active_target = player_target
     if is_live_target(player_target):
         player_locked = True
-        last_player_seen_ms = now_ms
         play_substate = PLAY_TRACK_PLAYER
         update_servo_tracking(player_target, img)
     else:
@@ -3005,7 +3025,7 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
     if not player_locked:
         racket_seen_prev = False
         current_racket_id = 0
-        if target_lost_timeout(last_player_seen_ms, now_ms):
+        if active_target is None or active_target.get("miss", 0) >= PLAYER_TRACK_MAX_MISS:
             play_substate = PLAY_SEARCH_PLAYER
             update_scan_motion(img, None)
             return None, "PLAY", "SEARCH_P", racket_present, racket_target, command_event
@@ -3085,9 +3105,17 @@ def draw_status_panel(img, fps, mode_name, state_name, racket_present):
         )
     elif state_name == "TRACK":
         if host_control_enabled():
-            track_text = "track:host fb:%d" % picker_feedback_state
+            track_text = "track:host fb:%d lost:%d/%d" % (
+                picker_feedback_state,
+                pick_track_lost_count,
+                PICK_TRACK_LOST_CONSECUTIVE_TH,
+            )
         else:
-            track_text = "track:fb:%d" % picker_feedback_state
+            track_text = "track:fb:%d lost:%d/%d" % (
+                picker_feedback_state,
+                pick_track_lost_count,
+                PICK_TRACK_LOST_CONSECUTIVE_TH,
+            )
         img.draw_string(
             2,
             200,
