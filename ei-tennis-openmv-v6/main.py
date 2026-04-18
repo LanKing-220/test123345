@@ -15,7 +15,6 @@ from pid import PID
 MODEL_PATH = "trained.tflite"
 LABELS_PATH = "labels.txt"
 LCD_HINT = image.ROTATE_270
-LCD_SAFE_COPY_BEFORE_WRITE = True
 
 # 需要舵机追踪时打开；如果 4.8.1 下再次出现白屏，可先改回 False 做隔离。
 ENABLE_SERVOS = True
@@ -26,6 +25,8 @@ UART_PORT = 3
 UART_BAUDRATE = 115200
 UART_TIMEOUT_CHAR = 120
 UART_RX_BUFFER_MAX = 96
+UART_SEND_INTERVAL_FRAMES = 5
+ENABLE_GRID_OVERLAY = True
 
 # 通信状态：0=no link, 1=linked(收到HI), 2=ok(收到OK)
 COMM_NO_LINK = 0
@@ -83,6 +84,9 @@ p9_tim_main = None
 pan_pwm_started = False
 tilt_pwm_started = False
 frame_index = 0
+grid_overlay = None
+grid_mask = None
+grid_overlay_ready = False
 
 TRACK_MAX_MISS = 8
 TRACK_GATE_MIN = 28
@@ -340,6 +344,73 @@ def init_uart():
         uart = UART(UART_PORT, UART_BAUDRATE, timeout_char=UART_TIMEOUT_CHAR)
     except Exception as err:
         uart = None
+        sys.print_exception(err)
+
+
+def draw_dashed_line(img, x0, y0, x1, y1, color, dash_len=8, gap_len=6):
+    if x0 == x1:
+        y = y0
+        while y < y1:
+            y_end = min(y + dash_len, y1)
+            img.draw_line((x0, y, x1, y_end), color=color)
+            y = y_end + gap_len
+    elif y0 == y1:
+        x = x0
+        while x < x1:
+            x_end = min(x + dash_len, x1)
+            img.draw_line((x, y0, x_end, y1), color=color)
+            x = x_end + gap_len
+
+
+def draw_grid(img, rows, cols, color):
+    w = img.width()
+    h = img.height()
+    for i in range(1, cols):
+        x = (w * i) // cols
+        draw_dashed_line(img, x, 0, x, h, color)
+    for j in range(1, rows):
+        y = (h * j) // rows
+        draw_dashed_line(img, 0, y, w, y, color)
+
+
+def init_grid_overlay():
+    global grid_overlay, grid_mask, grid_overlay_ready
+
+    grid_overlay = None
+    grid_mask = None
+    grid_overlay_ready = False
+
+    if not ENABLE_GRID_OVERLAY:
+        return
+
+    try:
+        gc.collect()
+        w = sensor.width()
+        h = sensor.height()
+        grid_overlay = sensor.alloc_extra_fb(w, h, sensor.RGB565)
+        grid_mask = sensor.alloc_extra_fb(w, h, sensor.BINARY)
+        grid_overlay.draw_rectangle((0, 0, w, h), color=(0, 0, 0), fill=True)
+        grid_mask.draw_rectangle((0, 0, w, h), color=0, fill=True)
+        draw_grid(grid_overlay, GRID_ROWS, GRID_COLS, GRID_COLOR)
+        draw_grid(grid_mask, GRID_ROWS, GRID_COLS, 1)
+        grid_overlay_ready = True
+    except Exception as err:
+        grid_overlay = None
+        grid_mask = None
+        grid_overlay_ready = False
+        sys.print_exception(err)
+
+
+def draw_grid_overlay(img):
+    global grid_overlay_ready
+
+    if not grid_overlay_ready:
+        return
+
+    try:
+        img.draw_image(grid_overlay, 0, 0, mask=grid_mask)
+    except Exception as err:
+        grid_overlay_ready = False
         sys.print_exception(err)
 
 
@@ -660,14 +731,6 @@ def display_frame(img):
     if lcd is None:
         return
 
-    # 避免显示DMA读到被下一帧覆盖的帧缓冲，导致半屏偏色/串色。
-    if LCD_SAFE_COPY_BEFORE_WRITE:
-        try:
-            lcd.write(img.copy(), hint=LCD_HINT)
-            return
-        except Exception:
-            pass
-
     lcd.write(img, hint=LCD_HINT)
 
 
@@ -894,32 +957,6 @@ def update_target_lock_pan(target, img, pan_value=None):
     target["lock_pan"] = pan_value
     target["lock_pan_ms"] = time.ticks_ms()
     return True
-
-
-def draw_dashed_line(img, x0, y0, x1, y1, color, dash_len=8, gap_len=6):
-    if x0 == x1:
-        y = y0
-        while y < y1:
-            y_end = min(y + dash_len, y1)
-            img.draw_line((x0, y, x1, y_end), color=color)
-            y = y_end + gap_len
-    elif y0 == y1:
-        x = x0
-        while x < x1:
-            x_end = min(x + dash_len, x1)
-            img.draw_line((x, y0, x_end, y1), color=color)
-            x = x_end + gap_len
-
-
-def draw_grid(img, rows, cols, color):
-    w = img.width()
-    h = img.height()
-    for i in range(1, cols):
-        x = (w * i) // cols
-        draw_dashed_line(img, x, 0, x, h, color)
-    for j in range(1, rows):
-        y = (h * j) // rows
-        draw_dashed_line(img, 0, y, w, y, color)
 
 
 def get_grid_position(x, y, img_w, img_h, rows, cols):
@@ -1992,30 +2029,19 @@ def uart_write_line(line):
         sys.print_exception(err)
 
 
-def choose_uart_ball_target(mode_name, tennis_candidates, active_target):
-    if mode_name == "PLAY":
-        return None
+def send_runtime_packets(mode_name, state_name, target):
+    if uart is None:
+        return
+    if mode_name != "SEEK" or state_name != "TRACK":
+        return
+    if (frame_index % UART_SEND_INTERVAL_FRAMES) != 0:
+        return
+    if (not is_live_target(target)) or target.get("kind") != "tennis":
+        return
 
-    nearest_target = choose_nearest_tennis(tennis_candidates)
-    if nearest_target is not None:
-        return nearest_target
-
-    if is_live_target(active_target) and active_target.get("kind") == "tennis":
-        return active_target
-
-    return None
-
-
-def send_runtime_packets(mode_name, target):
-    row = -1
-    col = -1
-    distance_cm = 0.0
-
-    if is_live_target(target) and target.get("kind") == "tennis":
-        row = int(target.get("row", -1))
-        col = int(target.get("col", -1))
-        distance_cm = target_distance_cm(target)
-
+    row = int(target.get("row", -1))
+    col = int(target.get("col", -1))
+    distance_cm = target_distance_cm(target)
     uart_write_line("%s,%d,%d,%.1f" % (mode_name, row, col, distance_cm))
 
 
@@ -2228,15 +2254,6 @@ def draw_active_target(img, target, mode_name, state_name):
         img.draw_string(2, 128, "measure:%s" % target["measure_src"], color=WHITE, mono_space=False)
 
 
-def draw_centered_text(img, text, y, color, scale=1):
-    char_w = 8 * scale
-    text_w = len(text) * char_w
-    x = max(0, (img.width() - text_w) // 2)
-
-    img.draw_string(x + 2, y + 2, text, color=(0, 0, 0), scale=scale, mono_space=True)
-    img.draw_string(x, y, text, color=color, scale=scale, mono_space=True)
-
-
 def draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates):
     if mode_name != "SEEK":
         return
@@ -2248,11 +2265,6 @@ def draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates):
         cy = clamp(cand["cy"], 0, img.height() - 1)
         radius = clamp(cand["radius"], 8, 50)
         img.draw_circle((cx, cy, radius), color=GREEN, thickness=2)
-
-
-def draw_player_countdown(img, mode_name, racket_present):
-    # 击球模式切回捡球改为由主机显式解锁后，不再显示本地倒计时。
-    return
 
 
 def update_servo_tracking(target, img):
@@ -3157,7 +3169,8 @@ def fomo_post_process(model, inputs, outputs):
     threshold_list = [(math.ceil(FOMO_HEATMAP_SCORE_TH * 255), 255)]
     results = [[] for _ in range(oc)]
 
-    for i in range(oc):
+    # FOMO 第 0 通道是 background，主循环不会使用，直接跳过可少做一轮热力图后处理。
+    for i in range(1, oc):
         channel = outputs[0][0, :, :, i]
         heatmap = make_grayscale_image(channel, oh, ow)
         blobs = heatmap.find_blobs(
@@ -3238,6 +3251,7 @@ def boot():
         except Exception as err:
             halt_with_error("SERVO FAIL", err)
     begin_scan_round()
+    init_grid_overlay()
     show_message("Model OK", "Running...")
 
 
@@ -3254,7 +3268,6 @@ def main_loop():
             process_uart_rx()
             try_send_hello()
             img = sensor.snapshot()
-            draw_grid(img, GRID_ROWS, GRID_COLS, GRID_COLOR)
             predictions = net.predict([img], callback=fomo_post_process)
             tennis_candidates = []
             player_candidates = []
@@ -3294,8 +3307,6 @@ def main_loop():
                     )
 
                     if detect_tennis and is_tennis:
-                        if not tennis_center_is_green(img, x, y, w, h):
-                            continue
                         radius = max(4, min(40, int(max(w, h) * 0.7)))
                         dist_cm = estimate_distance(max(w, h), image_width=img.width())
                         tennis_candidates.append(
@@ -3356,6 +3367,11 @@ def main_loop():
                 tennis_candidates = merge_duplicate_tennis_candidates(
                     tennis_candidates, img.width(), img.height()
                 )
+                tennis_candidates = [
+                    cand
+                    for cand in tennis_candidates
+                    if tennis_center_is_green(img, cand["x"], cand["y"], cand["w"], cand["h"])
+                ]
 
             refine_all_tennis = (
                 ENABLE_TENNIS_REFINEMENT
@@ -3375,11 +3391,11 @@ def main_loop():
             active_target, mode_name, state_name, racket_present, racket_target, command_event = run_state_machine(
                 img, tennis_target, tennis_candidates, player_target, racket_candidates
             )
+            draw_grid_overlay(img)
             draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates)
             draw_active_target(img, active_target, mode_name, state_name)
             draw_status_panel(img, clock.fps(), mode_name, state_name, racket_present)
-            draw_player_countdown(img, mode_name, racket_present)
-            send_runtime_packets(mode_name, active_target)
+            send_runtime_packets(mode_name, state_name, active_target)
             if command_event is not None:
                 send_command_packet(command_event[0], command_event[1], mode_name, state_name)
             display_frame(img)
