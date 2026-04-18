@@ -15,6 +15,7 @@ from pid import PID
 MODEL_PATH = "trained.tflite"
 LABELS_PATH = "labels.txt"
 LCD_HINT = image.ROTATE_270
+LCD_SAFE_COPY_BEFORE_WRITE = True
 
 # 需要舵机追踪时打开；如果 4.8.1 下再次出现白屏，可先改回 False 做隔离。
 ENABLE_SERVOS = True
@@ -46,7 +47,7 @@ HOST_CTRL_ACTIONS = (
     HOST_CTRL_ACTION_MODE_PLAY,
 )
 
-THRESH_TENNIS = 0.60
+THRESH_TENNIS = 0.50
 # 人和球拍更容易误触发，阈值调高后会更保守，降低敏感度。
 THRESH_PLAYER = 0.75
 THRESH_RACKET = 0.70
@@ -96,8 +97,8 @@ SERVO_SPEED_SCALE = 1.5
 
 pan_angle = PAN_INIT_ANGLE
 tilt_angle = TILT_INIT_ANGLE
-# 第一阶段全局找球需要更大的水平覆盖范围，但仍保留一点机械安全余量。
-pan_angle_limit = [20.0, 160.0]
+# 扩大水平扫描范围到 180° 舵机可用行程。
+pan_angle_limit = [0.0, 180.0]
 tilt_angle_limit = [80.0, 150.0]
 SERVO_DEADBAND = 6
 SCAN_TILT_TARGET = 132.0
@@ -273,13 +274,13 @@ FOMO_HEATMAP_SCORE_TH = 0.22
 LOCAL_NEAREST_GATE_MIN = 24
 LOCAL_NEAREST_GATE_RADIUS_SCALE = 4
 
-# 相机固定参数：关闭自动曝光/增益/白平衡，避免画面发白与亮度漂移。
-# 这里按“室内开灯但画面偏暗”的场景做了更亮的手动预设；
-# 固定白平衡改成手动 RGB 增益，轻微抬高红蓝通道，压住黄绿偏色。
+# 相机色彩参数：为避免“局部色彩异常”，默认启用自动白平衡做整屏统一校正。
+# 若需固定色彩可把 CAMERA_AUTO_WHITEBAL 设为 False，并启用手动 RGB 增益。
+CAMERA_AUTO_WHITEBAL = True
 CAMERA_MANUAL_WHITEBAL = False
-CAMERA_MANUAL_RGB_GAIN_DB = (0.0, 0.0, 0.0)
+CAMERA_MANUAL_RGB_GAIN_DB = (0.0, 1.0, 0.5)
 CAMERA_MANUAL_GAIN_DB = 1.0
-CAMERA_MANUAL_EXPOSURE_US = 100000
+CAMERA_MANUAL_EXPOSURE_US = 110000
 
 
 
@@ -292,12 +293,14 @@ def init_camera():
     sensor.skip_frames(time=200)
 
     try:
-        if CAMERA_MANUAL_WHITEBAL:
+        if CAMERA_AUTO_WHITEBAL:
+            sensor.set_auto_whitebal(True)
+        elif CAMERA_MANUAL_WHITEBAL:
             sensor.set_auto_whitebal(False, rgb_gain_db=CAMERA_MANUAL_RGB_GAIN_DB)
         else:
             sensor.set_auto_whitebal(False)
     except Exception:
-        sensor.set_auto_whitebal(False)
+        sensor.set_auto_whitebal(True if CAMERA_AUTO_WHITEBAL else False)
 
     try:
         sensor.set_auto_gain(False, gain_db=CAMERA_MANUAL_GAIN_DB)
@@ -646,8 +649,18 @@ def process_uart_rx():
 
 
 def display_frame(img):
-    if lcd is not None:
-        lcd.write(img, hint=LCD_HINT)
+    if lcd is None:
+        return
+
+    # 避免显示DMA读到被下一帧覆盖的帧缓冲，导致半屏偏色/串色。
+    if LCD_SAFE_COPY_BEFORE_WRITE:
+        try:
+            lcd.write(img.copy(), hint=LCD_HINT)
+            return
+        except Exception:
+            pass
+
+    lcd.write(img, hint=LCD_HINT)
 
 
 def try_send_hello():
@@ -2773,12 +2786,6 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
             best_scan_tennis = confirmed_target.copy()
             active_target = best_scan_tennis
             update_target_lock_pan(active_target, img)
-            update_servo_tracking(active_target, img)
-            lock_ready = target_is_aligned(active_target, img)
-
-            if not lock_ready:
-                pick_confirm_start_ms = 0
-                return active_target, "SEEK", "CONFIRM", racket_present, racket_target, command_event
 
             if pick_confirm_start_ms <= 0:
                 pick_confirm_start_ms = now_ms
