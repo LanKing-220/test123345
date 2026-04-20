@@ -25,8 +25,6 @@ UART_PORT = 3
 UART_BAUDRATE = 115200
 UART_TIMEOUT_CHAR = 120
 UART_RX_BUFFER_MAX = 96
-UART_SEND_INTERVAL_FRAMES = 5
-ENABLE_GRID_OVERLAY = True
 
 # 通信状态：0=no link, 1=linked(收到HI), 2=ok(收到OK)
 COMM_NO_LINK = 0
@@ -43,14 +41,15 @@ HOST_CTRL_ACTION_UNLOCK_TRACK = "UNLOCK_TRACK"
 HOST_CTRL_ACTION_MODE_PICK = "MODE_PICK"
 HOST_CTRL_ACTION_MODE_PLAY = "MODE_PLAY"
 HOST_CTRL_ACTIONS = (
+    HOST_CTRL_ACTION_UNLOCK_TRACK,
     HOST_CTRL_ACTION_MODE_PICK,
     HOST_CTRL_ACTION_MODE_PLAY,
 )
 
-THRESH_TENNIS = 0.4
+THRESH_TENNIS = 0.35
 # 人和球拍更容易误触发，阈值调高后会更保守，降低敏感度。
-THRESH_PLAYER = 0.3
-THRESH_RACKET = 0.2
+THRESH_PLAYER = 0.75
+THRESH_RACKET = 0.70
 
 GREEN = (0, 255, 0)
 BLUE = (0, 0, 255)
@@ -83,36 +82,30 @@ p9_tim_main = None
 pan_pwm_started = False
 tilt_pwm_started = False
 frame_index = 0
-grid_overlay = None
-grid_mask = None
-grid_overlay_ready = False
 
-TENNIS_TRACK_MAX_MISS = 30
-PLAYER_TRACK_MAX_MISS = 20
+TRACK_MAX_MISS = 8
 TRACK_GATE_MIN = 28
 TRACK_SMOOTH_OLD_NUM = 7
 TRACK_SMOOTH_NEW_NUM = 3
 
 PAN_INIT_ANGLE = 90.0
-TILT_INIT_ANGLE = 120.0
+TILT_INIT_ANGLE = 132.0
 SERVO_INIT_HOLD_FRAMES = 28
 SERVO_PWM_STAGGER_FRAMES = 8
-SERVO_SPEED_SCALE = 1.5
 
 pan_angle = PAN_INIT_ANGLE
 tilt_angle = TILT_INIT_ANGLE
-# 扩大水平扫描范围到 180° 舵机可用行程。
-pan_angle_limit = [0.0, 180.0]
+# 第一阶段全局找球需要更大的水平覆盖范围，但仍保留一点机械安全余量。
+pan_angle_limit = [20.0, 160.0]
 tilt_angle_limit = [80.0, 150.0]
 SERVO_DEADBAND = 6
-SCAN_TILT_TARGET = 120.0
-SCAN_TILT_FLOOR = 119.0
-SCAN_TILT_STEP = 1.2 * SERVO_SPEED_SCALE
-SERVO_INIT_STEP = 0.35 * SERVO_SPEED_SCALE
-SCAN_PAN_STEP = 0.75 * SERVO_SPEED_SCALE
-TRACK_PAN_MAX_STEP = 1.1 * SERVO_SPEED_SCALE
-TRACK_TILT_MAX_STEP = 1.0 * SERVO_SPEED_SCALE
-PLAY_SEARCH_TILT_STEP = 0.45 * SERVO_SPEED_SCALE
+SCAN_TILT_TARGET = 132.0
+SCAN_TILT_FLOOR = 128.0
+SCAN_TILT_STEP = 1.2
+SERVO_INIT_STEP = 0.35
+SCAN_PAN_STEP = 0.75
+TRACK_PAN_MAX_STEP = 1.1
+TRACK_TILT_MAX_STEP = 1.0
 
 pan_pid = PID(p=0.07, i=0, imax=90)
 tilt_pid = PID(p=0.05, i=0, imax=90)
@@ -131,76 +124,57 @@ PLAY_TRACK_PLAYER = 0
 PLAY_SEARCH_PLAYER = 1
 PLAY_WAIT_SERVE = PLAY_SEARCH_PLAYER
 
-PICK_CONFIRM_MAX_FRAMES = 20
-PICK_EARLY_LOCK_WINDOW_FRAMES = 10
-PICK_EARLY_LOCK_SEEN_FRAMES = 4
-PICK_FINAL_LOCK_MIN_SEEN_FRAMES = 7
-PICK_SCAN_FAIL_ROUNDS_TO_PLAY = 3
+AUTO_SWITCH_TO_PLAY = False
+PLAY_ENTER_CONFIRM_FRAMES = 5
+PICK_LOCK_CONFIRM_FRAMES = 3
 CAPTURE_DISTANCE_CM = 10.0
 CAPTURE_HOLD_FRAMES = 8
 NEAREST_SWITCH_MARGIN_CM = 6.0
 NEAREST_SWITCH_CONFIRM_FRAMES = 2
-PICK_TRACK_LOST_CONSECUTIVE_TH = 30
-PLAY_RACKET_CONFIRM_FRAMES = 1
-PLAY_HIT_WINDOW_FRAMES = 5
-PLAY_HIT_MIN_PLAYER_FRAMES = 2
-PLAY_HIT_MIN_RACKET_FRAMES = 2
-PLAY_HIT_SIGNAL_CMD = "HIT"
-PLAY_HIT_SIGNAL_ARG = 1
-PLAYER_LOCK_WINDOW_FRAMES = 20
-PLAYER_LOCK_MIN_HIT_FRAMES = 6
+PICK_CONFIRM_DURATION_MS = 2000
+TARGET_LOST_TIMEOUT_MS = 2000
+PLAY_RACKET_CONFIRM_FRAMES = 2
 RACKET_LINK_MARGIN_X_RATIO = 0.60
 RACKET_LINK_MARGIN_Y_RATIO = 0.35
 SCAN_ALIGN_MARGIN = 1.0
 RETURN_LOCK_MARGIN = 2.0
-RETURN_PAN_STEP = 1.0 * SERVO_SPEED_SCALE
-RETURN_TILT_STEP = 1.0 * SERVO_SPEED_SCALE
+RETURN_PAN_STEP = 1.0
+RETURN_TILT_STEP = 1.0
 SEEK_TILT_RESET_MARGIN = 1.0
 LOCK_ALIGN_MARGIN_X = 18
 LOCK_ALIGN_MARGIN_Y = 16
 LOCK_PAN_RECORD_MARGIN_X = 26
 LOCK_PAN_RECORD_MARGIN_Y = 22
 
-# 收紧中心颜色过滤，降低浅黄色非网球目标的误判概率。
-TENNIS_CENTER_GREEN_L_MIN = 20
-TENNIS_CENTER_GREEN_L_MAX = 90
-TENNIS_CENTER_GREEN_A_MIN = -38
-TENNIS_CENTER_GREEN_A_MAX = 18
-TENNIS_CENTER_GREEN_B_MIN = 14
-TENNIS_CENTER_GREEN_B_MAX = 84
-TENNIS_CENTER_GREEN_RATIO_MIN_PCT = 16
-TENNIS_CENTER_GREEN_STRONG_RATIO_PCT = 24
-TENNIS_CENTER_GREEN_BIAS_MIN = 16
-TENNIS_CENTER_GREEN_CHROMA_MIN = 20
-TENNIS_CENTER_GREEN_DOMINANCE_MARGIN_PCT = 10
-TENNIS_CENTER_GREEN_SMALL_DOMINANCE_MARGIN_PCT = 4
+TENNIS_CENTER_GREEN_L_MIN = 18
+TENNIS_CENTER_GREEN_L_MAX = 96
+TENNIS_CENTER_GREEN_A_MIN = -44
+TENNIS_CENTER_GREEN_A_MAX = 28
+TENNIS_CENTER_GREEN_B_MIN = 6
+TENNIS_CENTER_GREEN_B_MAX = 92
+TENNIS_CENTER_GREEN_RATIO_MIN_PCT = 12
+TENNIS_CENTER_GREEN_STRONG_RATIO_PCT = 20
+TENNIS_CENTER_GREEN_BIAS_MIN = 10
+TENNIS_CENTER_GREEN_CHROMA_MIN = 16
 TENNIS_CENTER_GREEN_ROI_MIN = 6
 TENNIS_CENTER_GREEN_ROI_MAX = 18
-TENNIS_CENTER_WHITE_L_MIN = 56
-TENNIS_CENTER_WHITE_A_MIN = -8
-TENNIS_CENTER_WHITE_A_MAX = 8
-TENNIS_CENTER_WHITE_B_MIN = -4
-TENNIS_CENTER_WHITE_B_MAX = 14
-TENNIS_CENTER_WHITE_CHROMA_MAX = 16
-TENNIS_CENTER_WHITE_RATIO_MIN_PCT = 46
-TENNIS_CENTER_WHITE_STRONG_RATIO_PCT = 66
-TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT = 22
-TENNIS_CENTER_WHITE_GREEN_BIAS_MAX = 12
-TENNIS_CENTER_PALE_YELLOW_L_MIN = 60
-TENNIS_CENTER_PALE_YELLOW_A_MIN = -4
-TENNIS_CENTER_PALE_YELLOW_A_MAX = 14
-TENNIS_CENTER_PALE_YELLOW_B_MIN = 20
-TENNIS_CENTER_PALE_YELLOW_B_MAX = 38
-TENNIS_CENTER_PALE_YELLOW_CHROMA_MAX = 38
-TENNIS_CENTER_PALE_YELLOW_GREEN_RATIO_MAX_PCT = 22
-TENNIS_CENTER_PALE_YELLOW_BIAS_MAX = 16
-PLAY_ENTER_TILT_LIFT_DEG = 30.0
+TENNIS_CENTER_WHITE_L_MIN = 54
+TENNIS_CENTER_WHITE_A_MIN = -10
+TENNIS_CENTER_WHITE_A_MAX = 10
+TENNIS_CENTER_WHITE_B_MIN = -8
+TENNIS_CENTER_WHITE_B_MAX = 18
+TENNIS_CENTER_WHITE_CHROMA_MAX = 18
+TENNIS_CENTER_WHITE_RATIO_MIN_PCT = 42
+TENNIS_CENTER_WHITE_STRONG_RATIO_PCT = 62
+TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT = 18
+TENNIS_CENTER_WHITE_GREEN_BIAS_MAX = 16
 
 PICKER_FEEDBACK_PIN = None
 PICKER_FEEDBACK_ACTIVE_LEVEL = 1
 
 mode = MODE_PICK
 pick_substate = PICK_SCAN
+play_substate = PLAY_TRACK_PLAYER
 
 capture_cmd = 0
 capture_flash_frames = 0
@@ -210,21 +184,19 @@ balls_picked = 0
 target_balls = 5
 scan_direction = 1
 scan_speed = SCAN_PAN_STEP
+scan_lock_count = 0
 nearest_switch_count = 0
 play_ready_frames = 0
-play_presence_window = []
-play_hit_latched = False
-player_lock_window = []
+racket_seen_prev = False
 best_scan_tennis = None
 scan_ranked_tennis = []
 scan_candidate_index = 0
 servo_init_frames_remaining = 0
 scan_seek_left = True
 scan_tilt_reset_pending = False
-pick_confirm_total_frames = 0
-pick_confirm_seen_frames = 0
-pick_scan_fail_rounds = 0
-pick_track_lost_count = 0
+pick_confirm_start_ms = 0
+last_tennis_seen_ms = 0
+last_player_seen_ms = 0
 picker_feedback_pin = None
 picker_feedback_state = 0
 picker_uart_done_pending = 0
@@ -240,7 +212,6 @@ host_mode_switch_pending = -1
 ENABLE_TENNIS_REFINEMENT = True
 HOUGH_INTERVAL = 3
 DISTANCE_SCALE = 2.15
-DISTANCE_OUTPUT_SCALE = 0.65
 REFINE_ALL_TENNIS_IN_PICK_SCAN = True
 MEASURE_WINDOW_LEN = 10
 MEASURE_TRIM_COUNT = 2
@@ -254,36 +225,9 @@ COLOR_TOL_A_EXTRA = 3
 COLOR_TOL_B_EXTRA = 3.5
 
 DRAW_RADIUS_SCALE = 1.15
-CLOSE_DRAW_RADIUS_SCALE = 1.00
 ROI_NEAR_SWITCH = 26
 FAR_ROI_PAD_MIN = 6
 MAX_COLOR_BLOB_AREA_MULT = 6
-CLOSE_COLOR_BLOB_AREA_RATIO_PCT = 96
-CLOSE_COLOR_PERCENTILE_LO = 0.10
-CLOSE_COLOR_PERCENTILE_HI = 0.90
-CLOSE_COLOR_L_MARGIN = 6
-CLOSE_COLOR_A_MARGIN = 5
-CLOSE_COLOR_B_MARGIN = 6
-CLOSE_COLOR_ROUNDNESS_MIN = 0.20
-CLOSE_COLOR_DENSITY_MIN = 0.20
-CLOSE_BALL_BBOX_SIZE_TH = 32
-CLOSE_BALL_MERGE_COUNT_TH = 2
-CLOSE_BALL_ROI_PAD_MIN = 18
-CLOSE_HOUGH_X_MARGIN = 12
-CLOSE_HOUGH_Y_MARGIN = 12
-CLOSE_HOUGH_R_MARGIN = 14
-CLOSE_HOUGH_R_MAX = 140
-FOMO_DUPLICATE_GENERAL_IOU = 0.35
-FOMO_DUPLICATE_CLOSE_IOU = 0.08
-FOMO_DUPLICATE_CLOSE_SIZE_TH = 18
-FOMO_DUPLICATE_CENTER_PAD = 14
-CLOSE_REFINE_DUPLICATE_DISTANCE_CM = 10.0
-CLOSE_REFINE_DUPLICATE_CENTER_MIN = 10
-CLOSE_REFINE_DUPLICATE_CENTER_RATIO_PCT = 40
-CLOSE_REFINE_DUPLICATE_DIAMETER_RATIO_MAX_PCT = 180
-CLOSE_REFINE_DUPLICATE_DIST_DIFF_CM = 4.0
-CLOSE_REFINE_DUPLICATE_CENTER_PAD = 8
-CIRCLE_DENSITY_REF = 0.78539816339
 
 EDGE_LOW_TH = 55
 EDGE_HIGH_TH = 110
@@ -292,62 +236,14 @@ GLARE_L_TH = 88
 GLARE_RATIO_TH_PCT = 18
 SMALL_BALL_SIZE_TH = 24
 GLARE_DIAMETER_CAP_PCT = 115
-FAR_BALL_SIZE_TH = 16
-FAR_BALL_HOUGH_R_MAX = 20
-FAR_BALL_DIAMETER_RATIO_MIN_PCT = 70
-FAR_BALL_DIAMETER_RATIO_MAX_PCT = 150
-GENERAL_DIAMETER_RATIO_MIN_PCT = 65
-GENERAL_DIAMETER_RATIO_MAX_PCT = 190
-MID_BALL_HOUGH_BBOX_MIN = 10
-MID_BALL_HOUGH_BBOX_MAX = 22
-MID_BALL_HOUGH_DIAMETER_BOOST_PCT = 108
-
-FOMO_HEATMAP_AREA_TH = 2
-FOMO_HEATMAP_PIXELS_TH = 2
-FOMO_HEATMAP_MERGE_MARGIN = 1
-FOMO_HEATMAP_SCORE_TH = 0.22
-
-LOCAL_NEAREST_GATE_MIN = 24
-LOCAL_NEAREST_GATE_RADIUS_SCALE = 4
-
-# 相机色彩参数：为避免“局部色彩异常”，默认启用自动白平衡做整屏统一校正。
-# 若需固定色彩可把 CAMERA_AUTO_WHITEBAL 设为 False，并启用手动 RGB 增益。
-CAMERA_AUTO_WHITEBAL = True
-CAMERA_MANUAL_WHITEBAL = False
-CAMERA_MANUAL_RGB_GAIN_DB = (0.3, 0.0, 0.8)
-CAMERA_MANUAL_GAIN_DB = 1.0
-CAMERA_MANUAL_EXPOSURE_US = 160000
 
 
 def init_camera():
     sensor.reset()
     sensor.set_pixformat(sensor.RGB565)
     sensor.set_framesize(sensor.QVGA)
-
-    # 完全手动：不走自动收敛，启动后直接固定参数。
-    sensor.skip_frames(time=200)
-
-    try:
-        if CAMERA_AUTO_WHITEBAL:
-            sensor.set_auto_whitebal(True)
-        elif CAMERA_MANUAL_WHITEBAL:
-            sensor.set_auto_whitebal(False, rgb_gain_db=CAMERA_MANUAL_RGB_GAIN_DB)
-        else:
-            sensor.set_auto_whitebal(False)
-    except Exception:
-        sensor.set_auto_whitebal(True if CAMERA_AUTO_WHITEBAL else False)
-
-    try:
-        sensor.set_auto_gain(False, gain_db=CAMERA_MANUAL_GAIN_DB)
-    except Exception:
-        sensor.set_auto_gain(False)
-
-    try:
-        sensor.set_auto_exposure(False, exposure_us=CAMERA_MANUAL_EXPOSURE_US)
-    except Exception:
-        sensor.set_auto_exposure(False)
-
-    sensor.skip_frames(time=300)
+    sensor.set_auto_whitebal(False)
+    sensor.skip_frames(10)
 
 
 def init_lcd():
@@ -367,73 +263,6 @@ def init_uart():
         uart = UART(UART_PORT, UART_BAUDRATE, timeout_char=UART_TIMEOUT_CHAR)
     except Exception as err:
         uart = None
-        sys.print_exception(err)
-
-
-def draw_dashed_line(img, x0, y0, x1, y1, color, dash_len=8, gap_len=6):
-    if x0 == x1:
-        y = y0
-        while y < y1:
-            y_end = min(y + dash_len, y1)
-            img.draw_line((x0, y, x1, y_end), color=color)
-            y = y_end + gap_len
-    elif y0 == y1:
-        x = x0
-        while x < x1:
-            x_end = min(x + dash_len, x1)
-            img.draw_line((x, y0, x_end, y1), color=color)
-            x = x_end + gap_len
-
-
-def draw_grid(img, rows, cols, color):
-    w = img.width()
-    h = img.height()
-    for i in range(1, cols):
-        x = (w * i) // cols
-        draw_dashed_line(img, x, 0, x, h, color)
-    for j in range(1, rows):
-        y = (h * j) // rows
-        draw_dashed_line(img, 0, y, w, y, color)
-
-
-def init_grid_overlay():
-    global grid_overlay, grid_mask, grid_overlay_ready
-
-    grid_overlay = None
-    grid_mask = None
-    grid_overlay_ready = False
-
-    if not ENABLE_GRID_OVERLAY:
-        return
-
-    try:
-        gc.collect()
-        w = sensor.width()
-        h = sensor.height()
-        grid_overlay = sensor.alloc_extra_fb(w, h, sensor.RGB565)
-        grid_mask = sensor.alloc_extra_fb(w, h, sensor.BINARY)
-        grid_overlay.draw_rectangle((0, 0, w, h), color=(0, 0, 0), fill=True)
-        grid_mask.draw_rectangle((0, 0, w, h), color=0, fill=True)
-        draw_grid(grid_overlay, GRID_ROWS, GRID_COLS, GRID_COLOR)
-        draw_grid(grid_mask, GRID_ROWS, GRID_COLS, 1)
-        grid_overlay_ready = True
-    except Exception as err:
-        grid_overlay = None
-        grid_mask = None
-        grid_overlay_ready = False
-        sys.print_exception(err)
-
-
-def draw_grid_overlay(img):
-    global grid_overlay_ready
-
-    if not grid_overlay_ready:
-        return
-
-    try:
-        img.draw_image(grid_overlay, 0, 0, mask=grid_mask)
-    except Exception as err:
-        grid_overlay_ready = False
         sys.print_exception(err)
 
 
@@ -527,9 +356,7 @@ def read_picker_feedback(consume=True):
         return 0
 
     try:
-        picker_feedback_state = (
-            1 if picker_feedback_pin.value() == PICKER_FEEDBACK_ACTIVE_LEVEL else 0
-        )
+        picker_feedback_state = 1 if picker_feedback_pin.value() == PICKER_FEEDBACK_ACTIVE_LEVEL else 0
     except Exception:
         picker_feedback_state = 0
     return picker_feedback_state
@@ -580,6 +407,8 @@ def host_action_supported(action):
 
 
 def host_action_allowed(action):
+    if action == HOST_CTRL_ACTION_UNLOCK_TRACK:
+        return (mode == MODE_PICK) and (pick_substate == PICK_TRACK)
     if action == HOST_CTRL_ACTION_MODE_PICK:
         return mode == MODE_PLAY
     if action == HOST_CTRL_ACTION_MODE_PLAY:
@@ -648,21 +477,9 @@ def parse_host_ctrl_message(text):
         return True
 
     now_ms = time.ticks_ms()
-    age_ms = (
-        time.ticks_diff(now_ms, host_ctrl_pending_ms)
-        if host_ctrl_pending_ms > 0
-        else -1
-    )
-    pending_alive = (
-        (host_ctrl_pending_ms > 0)
-        and (age_ms >= 0)
-        and (age_ms <= HOST_CTRL_CONFIRM_TIMEOUT_MS)
-    )
-    matched = (
-        pending_alive
-        and (action == host_ctrl_pending_action)
-        and (token == host_ctrl_pending_token)
-    )
+    age_ms = time.ticks_diff(now_ms, host_ctrl_pending_ms) if host_ctrl_pending_ms > 0 else -1
+    pending_alive = (host_ctrl_pending_ms > 0) and (age_ms >= 0) and (age_ms <= HOST_CTRL_CONFIRM_TIMEOUT_MS)
+    matched = pending_alive and (action == host_ctrl_pending_action) and (token == host_ctrl_pending_token)
 
     if matched and host_action_allowed(action):
         if action == HOST_CTRL_ACTION_UNLOCK_TRACK:
@@ -763,10 +580,8 @@ def process_uart_rx():
 
 
 def display_frame(img):
-    if lcd is None:
-        return
-
-    lcd.write(img, hint=LCD_HINT)
+    if lcd is not None:
+        lcd.write(img, hint=LCD_HINT)
 
 
 def try_send_hello():
@@ -903,26 +718,8 @@ def tennis_center_is_green(img, x, y, w, h):
         white_pixels += blob.pixels()
 
     roi_pixels = max(1, roi[2] * roi[3])
-    small_target = max(w, h) <= FAR_BALL_SIZE_TH
     green_ratio_pct = (green_pixels * 100) // roi_pixels
     white_ratio_pct = (white_pixels * 100) // roi_pixels
-
-    if small_target:
-        green_ratio_min_pct = max(8, TENNIS_CENTER_GREEN_RATIO_MIN_PCT - 4)
-        strong_green_min_pct = max(14, TENNIS_CENTER_GREEN_STRONG_RATIO_PCT - 4)
-        white_ratio_min_pct = TENNIS_CENTER_WHITE_RATIO_MIN_PCT + 8
-        white_strong_min_pct = TENNIS_CENTER_WHITE_STRONG_RATIO_PCT + 6
-        white_dom_margin_pct = TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT + 8
-        green_dom_margin_pct = TENNIS_CENTER_GREEN_SMALL_DOMINANCE_MARGIN_PCT
-        strong_green_chroma_min = TENNIS_CENTER_GREEN_CHROMA_MIN + 2
-    else:
-        green_ratio_min_pct = TENNIS_CENTER_GREEN_RATIO_MIN_PCT
-        strong_green_min_pct = TENNIS_CENTER_GREEN_STRONG_RATIO_PCT
-        white_ratio_min_pct = TENNIS_CENTER_WHITE_RATIO_MIN_PCT
-        white_strong_min_pct = TENNIS_CENTER_WHITE_STRONG_RATIO_PCT
-        white_dom_margin_pct = TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT
-        green_dom_margin_pct = TENNIS_CENTER_GREEN_DOMINANCE_MARGIN_PCT
-        strong_green_chroma_min = TENNIS_CENTER_GREEN_CHROMA_MIN + 4
 
     mean_green = (
         (TENNIS_CENTER_GREEN_L_MIN <= l_mean <= TENNIS_CENTER_GREEN_L_MAX)
@@ -932,10 +729,8 @@ def tennis_center_is_green(img, x, y, w, h):
         and (chroma >= TENNIS_CENTER_GREEN_CHROMA_MIN)
     )
 
-    strong_green = (
-        (green_ratio_pct >= strong_green_min_pct)
-        and (green_bias >= TENNIS_CENTER_GREEN_BIAS_MIN)
-        and (chroma >= strong_green_chroma_min)
+    strong_green = (green_ratio_pct >= TENNIS_CENTER_GREEN_STRONG_RATIO_PCT) and (
+        green_bias >= TENNIS_CENTER_GREEN_BIAS_MIN
     )
     mean_white = (
         (l_mean >= TENNIS_CENTER_WHITE_L_MIN)
@@ -944,90 +739,14 @@ def tennis_center_is_green(img, x, y, w, h):
         and (chroma <= TENNIS_CENTER_WHITE_CHROMA_MAX)
         and (green_bias <= TENNIS_CENTER_WHITE_GREEN_BIAS_MAX)
     )
-    green_dominant = green_ratio_pct >= (white_ratio_pct + green_dom_margin_pct)
-    pale_bright = (l_mean >= (TENNIS_CENTER_WHITE_L_MIN + 8)) and (
-        chroma <= (TENNIS_CENTER_WHITE_CHROMA_MAX + 8)
+    white_dominant = (white_ratio_pct >= TENNIS_CENTER_WHITE_RATIO_MIN_PCT) and (
+        white_ratio_pct >= (green_ratio_pct + TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT)
     )
-    pale_yellow = (
-        (l_mean >= TENNIS_CENTER_PALE_YELLOW_L_MIN)
-        and (
-            TENNIS_CENTER_PALE_YELLOW_A_MIN <= a_mean <= TENNIS_CENTER_PALE_YELLOW_A_MAX
-        )
-        and (
-            TENNIS_CENTER_PALE_YELLOW_B_MIN <= b_mean <= TENNIS_CENTER_PALE_YELLOW_B_MAX
-        )
-        and (chroma <= TENNIS_CENTER_PALE_YELLOW_CHROMA_MAX)
-        and (green_ratio_pct <= TENNIS_CENTER_PALE_YELLOW_GREEN_RATIO_MAX_PCT)
-        and (green_bias <= TENNIS_CENTER_PALE_YELLOW_BIAS_MAX)
-    )
-    white_dominant = (white_ratio_pct >= white_ratio_min_pct) and (
-        white_ratio_pct >= (green_ratio_pct + white_dom_margin_pct)
-    )
-    if pale_bright and (green_ratio_pct < strong_green_min_pct):
+    if (mean_white and (white_ratio_pct >= TENNIS_CENTER_WHITE_RATIO_MIN_PCT)) or white_dominant:
         return False
-    if pale_yellow:
+    if white_ratio_pct >= TENNIS_CENTER_WHITE_STRONG_RATIO_PCT:
         return False
-    if (mean_white and (white_ratio_pct >= white_ratio_min_pct)) or white_dominant:
-        return False
-    if white_ratio_pct >= white_strong_min_pct:
-        return False
-    if not green_dominant:
-        return False
-    return (mean_green and (green_ratio_pct >= green_ratio_min_pct)) or strong_green
-
-
-def lift_tilt_for_play_mode():
-    if not ENABLE_SERVOS:
-        return
-    if p9 is None:
-        return
-
-    start_tilt_pwm()
-
-
-def play_search_tilt_target():
-    return clamp(
-        TILT_INIT_ANGLE - PLAY_ENTER_TILT_LIFT_DEG,
-        tilt_angle_limit[0],
-        tilt_angle_limit[1],
-    )
-
-
-def update_play_search_motion(img):
-    global pan_angle, scan_direction
-
-    if not ENABLE_SERVOS:
-        return
-    if p1 is None:
-        return
-
-    apply_pan_delta(scan_direction * scan_speed, SCAN_PAN_STEP)
-    if pan_angle >= pan_angle_limit[1]:
-        pan_angle = pan_angle_limit[1]
-        scan_direction = -1
-    elif pan_angle <= pan_angle_limit[0]:
-        pan_angle = pan_angle_limit[0]
-        scan_direction = 1
-
-    move_tilt_toward(play_search_tilt_target(), PLAY_SEARCH_TILT_STEP)
-
-
-def clamp_diameter_by_bbox(diameter, bbox_d, close_mode=False):
-    bbox_d = max(3, int(bbox_d))
-    if close_mode:
-        min_ratio = max(60, GENERAL_DIAMETER_RATIO_MIN_PCT - 5)
-        max_ratio = min(210, GENERAL_DIAMETER_RATIO_MAX_PCT + 15)
-    else:
-        min_ratio = GENERAL_DIAMETER_RATIO_MIN_PCT
-        max_ratio = GENERAL_DIAMETER_RATIO_MAX_PCT
-
-    if bbox_d <= FAR_BALL_SIZE_TH:
-        min_ratio = max(min_ratio, FAR_BALL_DIAMETER_RATIO_MIN_PCT)
-        max_ratio = min(max_ratio, FAR_BALL_DIAMETER_RATIO_MAX_PCT)
-
-    d_min = max(4, (bbox_d * min_ratio) // 100)
-    d_max = max(d_min, (bbox_d * max_ratio) // 100)
-    return int(clamp(diameter, d_min, d_max))
+    return (mean_green and (green_ratio_pct >= TENNIS_CENTER_GREEN_RATIO_MIN_PCT)) or strong_green
 
 
 def target_center_error(target, img):
@@ -1036,9 +755,7 @@ def target_center_error(target, img):
     return target["cx"] - (img.width() // 2), target["cy"] - (img.height() // 2)
 
 
-def target_is_aligned(
-    target, img, margin_x=LOCK_ALIGN_MARGIN_X, margin_y=LOCK_ALIGN_MARGIN_Y
-):
+def target_is_aligned(target, img, margin_x=LOCK_ALIGN_MARGIN_X, margin_y=LOCK_ALIGN_MARGIN_Y):
     if target is None:
         return False
     dx, dy = target_center_error(target, img)
@@ -1050,9 +767,7 @@ def update_target_lock_pan(target, img, pan_value=None):
         return False
     if target.get("miss", 0) > 0:
         return False
-    if not target_is_aligned(
-        target, img, LOCK_PAN_RECORD_MARGIN_X, LOCK_PAN_RECORD_MARGIN_Y
-    ):
+    if not target_is_aligned(target, img, LOCK_PAN_RECORD_MARGIN_X, LOCK_PAN_RECORD_MARGIN_Y):
         return False
 
     if pan_value is None:
@@ -1062,397 +777,44 @@ def update_target_lock_pan(target, img, pan_value=None):
     return True
 
 
+def draw_dashed_line(img, x0, y0, x1, y1, color, dash_len=8, gap_len=6):
+    if x0 == x1:
+        y = y0
+        while y < y1:
+            y_end = min(y + dash_len, y1)
+            img.draw_line((x0, y, x1, y_end), color=color)
+            y = y_end + gap_len
+    elif y0 == y1:
+        x = x0
+        while x < x1:
+            x_end = min(x + dash_len, x1)
+            img.draw_line((x, y0, x_end, y1), color=color)
+            x = x_end + gap_len
+
+
+def draw_grid(img, rows, cols, color):
+    w = img.width()
+    h = img.height()
+    for i in range(1, cols):
+        x = (w * i) // cols
+        draw_dashed_line(img, x, 0, x, h, color)
+    for j in range(1, rows):
+        y = (h * j) // rows
+        draw_dashed_line(img, 0, y, w, y, color)
+
+
 def get_grid_position(x, y, img_w, img_h, rows, cols):
     col = min(cols - 1, max(0, (x * cols) // img_w))
     row = min(rows - 1, max(0, (y * rows) // img_h))
     return row, col
 
 
-def rect_iou(rect_a, rect_b):
-    ax, ay, aw, ah = rect_a
-    bx, by, bw, bh = rect_b
-    ax2 = ax + aw
-    ay2 = ay + ah
-    bx2 = bx + bw
-    by2 = by + bh
-
-    inter_w = min(ax2, bx2) - max(ax, bx)
-    inter_h = min(ay2, by2) - max(ay, by)
-    if inter_w <= 0 or inter_h <= 0:
-        return 0.0
-
-    inter_area = inter_w * inter_h
-    union_area = (aw * ah) + (bw * bh) - inter_area
-    if union_area <= 0:
-        return 0.0
-    return inter_area / union_area
-
-
-def rect_contains_point(rect, px, py, pad=0):
-    x, y, w, h = rect
-    return (
-        (px >= (x - pad))
-        and (px <= (x + w + pad))
-        and (py >= (y - pad))
-        and (py <= (y + h + pad))
-    )
-
-
-def is_close_range_candidate(target):
-    if target is None:
-        return False
-
-    merge_count = int(target.get("merge_count", 1))
-    if merge_count >= CLOSE_BALL_MERGE_COUNT_TH:
-        return True
-
-    bbox_size = max(target.get("w", 0), target.get("h", 0))
-    if bbox_size >= CLOSE_BALL_BBOX_SIZE_TH:
-        return True
-
-    return False
-
-
-def target_raw_distance_cm(target):
-    if target is None:
-        return None
-
-    dist_cm = target.get("raw_dist_cm")
-    if dist_cm is None:
-        dist_cm = target.get("dist_cm")
-    if dist_cm is None:
-        return None
-    return float(dist_cm)
-
-
-def target_measure_diameter(target):
-    if target is None:
-        return None
-
-    diameter = target.get("raw_refined_diameter")
-    if diameter is None:
-        diameter = target.get("refined_diameter")
-    if diameter is None and ("w" in target) and ("h" in target):
-        diameter = max(target["w"], target["h"])
-    if diameter is None:
-        return None
-    return int(diameter)
-
-
-def target_measure_center(target):
-    if target is None:
-        return None, None
-
-    cx = target.get("measure_cx", target.get("cx"))
-    cy = target.get("measure_cy", target.get("cy"))
-    if cx is None or cy is None:
-        return None, None
-    return int(cx), int(cy)
-
-
-def is_ultra_close_tennis_candidate(target):
-    if target is None:
-        return False
-
-    raw_dist_cm = target_raw_distance_cm(target)
-    if (raw_dist_cm is not None) and (
-        raw_dist_cm <= CLOSE_REFINE_DUPLICATE_DISTANCE_CM
-    ):
-        return True
-    if int(target.get("close_fit", 0)):
-        return True
-    return is_close_range_candidate(target)
-
-
-def measure_source_rank(target):
-    src = str(target.get("measure_src", ""))
-    if src == "hough_close":
-        return 5
-    if src == "mix_close":
-        return 4
-    if src == "hough":
-        return 4
-    if src == "mix":
-        return 3
-    if src == "lab_close":
-        return 2
-    if src == "lab":
-        return 1
-    if src == "bbox_close":
-        return 1
-    return 0
-
-
-def close_refined_tennis_candidates_should_merge(a, b):
-    if a is None or b is None:
-        return False
-    if not (is_ultra_close_tennis_candidate(a) or is_ultra_close_tennis_candidate(b)):
-        return False
-
-    ax, ay = target_measure_center(a)
-    bx, by = target_measure_center(b)
-    if ax is None or ay is None or bx is None or by is None:
-        return False
-
-    dia_a = target_measure_diameter(a)
-    dia_b = target_measure_diameter(b)
-    if dia_a is None or dia_b is None:
-        return False
-
-    center_dx = abs(ax - bx)
-    center_dy = abs(ay - by)
-    min_d = max(1, min(dia_a, dia_b))
-    max_d = max(dia_a, dia_b)
-    center_gate = max(
-        CLOSE_REFINE_DUPLICATE_CENTER_MIN,
-        (min_d * CLOSE_REFINE_DUPLICATE_CENTER_RATIO_PCT) // 100,
-    )
-    loose_gate = max(
-        center_gate + 4, (max_d * CLOSE_REFINE_DUPLICATE_CENTER_RATIO_PCT) // 100
-    )
-    ratio_pct = (max_d * 100) // max(1, min_d)
-
-    rect_a = (a["x"], a["y"], a["w"], a["h"])
-    rect_b = (b["x"], b["y"], b["w"], b["h"])
-    contains = rect_contains_point(
-        rect_a, bx, by, CLOSE_REFINE_DUPLICATE_CENTER_PAD
-    ) or rect_contains_point(rect_b, ax, ay, CLOSE_REFINE_DUPLICATE_CENTER_PAD)
-    overlap = rect_iou(rect_a, rect_b)
-
-    dist_close = True
-    dist_a = target_raw_distance_cm(a)
-    dist_b = target_raw_distance_cm(b)
-    if dist_a is not None and dist_b is not None:
-        dist_close = abs(dist_a - dist_b) <= CLOSE_REFINE_DUPLICATE_DIST_DIFF_CM
-
-    similar_size = ratio_pct <= CLOSE_REFINE_DUPLICATE_DIAMETER_RATIO_MAX_PCT
-    if (center_dx <= center_gate) and (center_dy <= center_gate) and similar_size:
-        return True
-    if contains and (center_dx <= loose_gate) and (center_dy <= loose_gate):
-        return dist_close or similar_size or (overlap > 0.0)
-    if (
-        (overlap >= FOMO_DUPLICATE_CLOSE_IOU)
-        and (center_dx <= loose_gate)
-        and (center_dy <= loose_gate)
-    ):
-        return dist_close and similar_size
-    return False
-
-
-def select_close_refined_tennis_representative(group):
-    if len(group) == 1:
-        merged = group[0].copy()
-        merged["merge_count"] = int(group[0].get("merge_count", 1))
-        return merged
-
-    best = None
-    best_key = None
-    merge_count = 0
-
-    for cand in group:
-        merge_count += int(cand.get("merge_count", 1))
-        raw_dist_cm = target_raw_distance_cm(cand)
-        if raw_dist_cm is None:
-            raw_dist_cm = 9999.0
-        diameter = target_measure_diameter(cand)
-        if diameter is None:
-            diameter = 0
-        key = (
-            -int(cand.get("cue_conf", 0)),
-            -measure_source_rank(cand),
-            raw_dist_cm,
-            -diameter,
-            -(cand["w"] * cand["h"]),
-            -int(cand.get("score", 0) * 1000),
-        )
-        if best_key is None or key < best_key:
-            best_key = key
-            best = cand
-
-    merged = best.copy()
-    merged["merge_count"] = max(1, merge_count)
-    return merged
-
-
-def dedupe_close_refined_tennis_candidates(candidates):
-    if len(candidates) <= 1:
-        merged = []
-        for cand in candidates:
-            item = cand.copy()
-            item["merge_count"] = int(cand.get("merge_count", 1))
-            merged.append(item)
-        return merged
-
-    used = [False] * len(candidates)
-    merged = []
-
-    for i in range(len(candidates)):
-        if used[i]:
-            continue
-
-        group = [candidates[i]]
-        used[i] = True
-        expanded = True
-        while expanded:
-            expanded = False
-            for j in range(len(candidates)):
-                if used[j]:
-                    continue
-                for saved in group:
-                    if close_refined_tennis_candidates_should_merge(
-                        saved, candidates[j]
-                    ):
-                        group.append(candidates[j])
-                        used[j] = True
-                        expanded = True
-                        break
-
-        merged.append(select_close_refined_tennis_representative(group))
-
-    return merged
-
-
-def tennis_candidates_should_merge(a, b):
-    rect_a = (a["x"], a["y"], a["w"], a["h"])
-    rect_b = (b["x"], b["y"], b["w"], b["h"])
-    iou = rect_iou(rect_a, rect_b)
-    center_dx = abs(a["cx"] - b["cx"])
-    center_dy = abs(a["cy"] - b["cy"])
-    max_size = max(max(a["w"], a["h"]), max(b["w"], b["h"]))
-    close_pair = (
-        is_close_range_candidate(a)
-        or is_close_range_candidate(b)
-        or (max(a["w"], a["h"]) >= FOMO_DUPLICATE_CLOSE_SIZE_TH)
-        or (max(b["w"], b["h"]) >= FOMO_DUPLICATE_CLOSE_SIZE_TH)
-    )
-
-    contains = rect_contains_point(
-        rect_a, b["cx"], b["cy"], FOMO_DUPLICATE_CENTER_PAD
-    ) or rect_contains_point(rect_b, a["cx"], a["cy"], FOMO_DUPLICATE_CENTER_PAD)
-    center_close = center_dx <= (
-        max_size + FOMO_DUPLICATE_CENTER_PAD
-    ) and center_dy <= (max_size + FOMO_DUPLICATE_CENTER_PAD)
-
-    if close_pair:
-        if contains and center_close:
-            return True
-        if (iou >= FOMO_DUPLICATE_CLOSE_IOU) and center_close:
-            return True
-        if ((center_dx + center_dy) <= max(18, max_size)) and (
-            (iou > 0.02) or contains
-        ):
-            return True
-        return False
-
-    if (iou >= FOMO_DUPLICATE_GENERAL_IOU) and center_close:
-        return True
-    return False
-
-
-def merge_tennis_candidate_group(group, img_w, img_h):
-    if len(group) == 1:
-        merged = group[0].copy()
-        merged["merge_count"] = int(group[0].get("merge_count", 1))
-        return merged
-
-    left = group[0]["x"]
-    top = group[0]["y"]
-    right = group[0]["x"] + group[0]["w"]
-    bottom = group[0]["y"] + group[0]["h"]
-    weighted_cx = 0
-    weighted_cy = 0
-    weight_sum = 0
-    best_score = 0.0
-    nearest_dist = None
-    merge_count = 0
-
-    for cand in group:
-        left = min(left, cand["x"])
-        top = min(top, cand["y"])
-        right = max(right, cand["x"] + cand["w"])
-        bottom = max(bottom, cand["y"] + cand["h"])
-        weight = max(1, int(cand["score"] * 1000)) + max(1, cand["w"] * cand["h"])
-        weighted_cx += cand["cx"] * weight
-        weighted_cy += cand["cy"] * weight
-        weight_sum += weight
-        if cand["score"] > best_score:
-            best_score = cand["score"]
-        cand_dist = cand.get("dist_cm")
-        if cand_dist is not None:
-            if nearest_dist is None or cand_dist < nearest_dist:
-                nearest_dist = cand_dist
-        merge_count += int(cand.get("merge_count", 1))
-
-    merged_cx = weighted_cx // max(1, weight_sum)
-    merged_cy = weighted_cy // max(1, weight_sum)
-    merged_w = max(1, right - left)
-    merged_h = max(1, bottom - top)
-    merged_cx = clamp(merged_cx, left, right - 1)
-    merged_cy = clamp(merged_cy, top, bottom - 1)
-    row, col = get_grid_position(
-        merged_cx, merged_cy, img_w, img_h, GRID_ROWS, GRID_COLS
-    )
-
-    return {
-        "x": left,
-        "y": top,
-        "cx": merged_cx,
-        "cy": merged_cy,
-        "radius": max(4, min(55, estimate_ball_radius(merged_w, merged_h))),
-        "w": merged_w,
-        "h": merged_h,
-        "score": best_score,
-        "dist_cm": nearest_dist,
-        "row": row,
-        "col": col,
-        "kind": "tennis",
-        "merge_count": max(1, merge_count),
-    }
-
-
-def merge_duplicate_tennis_candidates(candidates, img_w, img_h):
-    if len(candidates) <= 1:
-        merged = []
-        for cand in candidates:
-            item = cand.copy()
-            item["merge_count"] = int(cand.get("merge_count", 1))
-            merged.append(item)
-        return merged
-
-    used = [False] * len(candidates)
-    merged = []
-
-    for i in range(len(candidates)):
-        if used[i]:
-            continue
-
-        group = [candidates[i]]
-        used[i] = True
-        expanded = True
-        while expanded:
-            expanded = False
-            for j in range(len(candidates)):
-                if used[j]:
-                    continue
-                for saved in group:
-                    if tennis_candidates_should_merge(saved, candidates[j]):
-                        group.append(candidates[j])
-                        used[j] = True
-                        expanded = True
-                        break
-
-        merged.append(merge_tennis_candidate_group(group, img_w, img_h))
-
-    return merged
-
-
-def correct_tennis_distance(distance_cm, pixel_diameter):
-    # 距离修正仅依赖像素直径，不使用拟合半径作为参考。
-    if pixel_diameter >= 46:
+def correct_tennis_distance(distance_cm, radius):
+    if radius >= 50:
         factor = 1.10
-    elif pixel_diameter >= 34:
+    elif radius >= 42:
         factor = 1.15
-    elif pixel_diameter >= 24:
+    elif radius >= 36:
         factor = 1.20
     else:
         factor = 1.25
@@ -1488,58 +850,11 @@ def build_tennis_color_threshold(img, x, y, w, h):
     return (l_lo, l_hi, a_lo, a_hi, b_lo, b_hi)
 
 
-def build_close_tennis_color_threshold(img, x, y, w, h):
-    seed_w = max(8, (w * 3) // 10)
-    seed_h = max(8, (h * 3) // 10)
-    seed_x = clamp(x + (w - seed_w) // 2, 0, img.width() - 1)
-    seed_y = clamp(y + (h - seed_h) // 2, 0, img.height() - 1)
-    seed_w = clamp(seed_w, 1, img.width() - seed_x)
-    seed_h = clamp(seed_h, 1, img.height() - seed_y)
-    seed_roi = (seed_x, seed_y, seed_w, seed_h)
-
-    hist = img.get_histogram(roi=seed_roi)
-    lo = hist.get_percentile(CLOSE_COLOR_PERCENTILE_LO)
-    hi = hist.get_percentile(CLOSE_COLOR_PERCENTILE_HI)
-    stats = img.get_statistics(roi=seed_roi)
-
-    l_lo = int(clamp(min(lo.l_value(), stats.l_mean()) - CLOSE_COLOR_L_MARGIN, 0, 100))
-    l_hi = int(clamp(max(hi.l_value(), stats.l_mean()) + CLOSE_COLOR_L_MARGIN, 0, 100))
-    a_lo = int(
-        clamp(min(lo.a_value(), stats.a_mean()) - CLOSE_COLOR_A_MARGIN, -128, 127)
-    )
-    a_hi = int(
-        clamp(max(hi.a_value(), stats.a_mean()) + CLOSE_COLOR_A_MARGIN, -128, 127)
-    )
-    b_lo = int(
-        clamp(min(lo.b_value(), stats.b_mean()) - CLOSE_COLOR_B_MARGIN, -128, 127)
-    )
-    b_hi = int(
-        clamp(max(hi.b_value(), stats.b_mean()) + CLOSE_COLOR_B_MARGIN, -128, 127)
-    )
-
-    a_hi = min(a_hi, TENNIS_CENTER_GREEN_A_MAX + 18)
-    b_lo = max(b_lo, TENNIS_CENTER_GREEN_B_MIN - 8)
-    return (l_lo, l_hi, a_lo, a_hi, b_lo, b_hi)
-
-
-def estimate_color_blob(img, roi, ref_cx, ref_cy, bbox_d, close_mode=False):
+def estimate_color_blob(img, roi, ref_cx, ref_cy, bbox_d):
     rx, ry, rw, rh = roi
-    if close_mode:
-        thr = build_close_tennis_color_threshold(
-            img,
-            ref_cx - (rw // 6),
-            ref_cy - (rh // 6),
-            max(8, rw // 3),
-            max(8, rh // 3),
-        )
-    else:
-        thr = build_tennis_color_threshold(
-            img,
-            ref_cx - (rw // 6),
-            ref_cy - (rh // 6),
-            max(6, rw // 3),
-            max(6, rh // 3),
-        )
+    thr = build_tennis_color_threshold(
+        img, ref_cx - (rw // 6), ref_cy - (rh // 6), max(6, rw // 3), max(6, rh // 3)
+    )
     blobs = img.find_blobs(
         [thr],
         roi=roi,
@@ -1552,74 +867,39 @@ def estimate_color_blob(img, roi, ref_cx, ref_cy, bbox_d, close_mode=False):
     )
 
     if not blobs:
-        return None, ref_cx, ref_cy, None, None
+        return None, ref_cx, ref_cy
 
     best = None
     best_score = None
-    if close_mode:
-        max_blob_area = max(36, (rw * rh * CLOSE_COLOR_BLOB_AREA_RATIO_PCT) // 100)
-    else:
-        max_blob_area = max(36, bbox_d * bbox_d * MAX_COLOR_BLOB_AREA_MULT)
+    max_blob_area = max(36, bbox_d * bbox_d * MAX_COLOR_BLOB_AREA_MULT)
     for b in blobs:
         if b.pixels() > max_blob_area:
             continue
 
-        roundness = b.roundness()
-        density = b.density()
-        if (
-            close_mode
-            and (roundness < CLOSE_COLOR_ROUNDNESS_MIN)
-            and (density < CLOSE_COLOR_DENSITY_MIN)
-        ):
-            continue
-
         dx = b.cx() - ref_cx
         dy = b.cy() - ref_cy
-        inside_ref = (b.x() <= ref_cx <= (b.x() + b.w())) and (
-            b.y() <= ref_cy <= (b.y() + b.h())
-        )
+        inside_ref = (b.x() <= ref_cx <= (b.x() + b.w())) and (b.y() <= ref_cy <= (b.y() + b.h()))
 
         long_side = max(b.w(), b.h())
         short_side = max(1, min(b.w(), b.h()))
         ratio = (long_side * 100) // short_side
-        roundness_penalty = int((1.0 - roundness) * (180 if close_mode else 80))
-        density_penalty = int(
-            abs(density - CIRCLE_DENSITY_REF) * (220 if close_mode else 90)
-        )
-        shape_penalty = abs(ratio - 100) + roundness_penalty + density_penalty
+        shape_penalty = abs(ratio - 100)
 
         dist_cost = abs(dx) + abs(dy)
-        if close_mode:
-            dist_cost *= 2
-            size_gain = b.pixels() // 5
-            center_bonus = 80 if inside_ref else 0
-        else:
-            dist_cost *= 3
-            size_gain = b.pixels() // 6
-            center_bonus = 60 if inside_ref else 0
-
-        score = dist_cost + shape_penalty - size_gain - center_bonus
+        size_gain = b.pixels() // 6
+        center_bonus = 60 if inside_ref else 0
+        score = (dist_cost * 3) + shape_penalty - size_gain - center_bonus
         if (best_score is None) or (score < best_score):
             best_score = score
             best = b
 
     if best is None:
-        return None, ref_cx, ref_cy, None, None
+        return None, ref_cx, ref_cy
 
-    eq_d = int(math.sqrt((4.0 * best.pixels()) / math.pi) + 0.5)
+    eq_d = int(math.sqrt((4.0 * best.pixels()) / math.pi))
     blob_d = max(best.w(), best.h())
-    if close_mode:
-        short_side = min(best.w(), best.h())
-        avg_side = (best.w() + best.h()) // 2
-        roundness = best.roundness()
-        density = best.density()
-        if (roundness >= 0.55) and (density >= 0.60):
-            color_d = int(((eq_d * 7) + (avg_side * 3) + 5) // 10)
-        else:
-            color_d = int(((eq_d * 4) + (short_side * 6) + 5) // 10)
-    else:
-        color_d = max(eq_d, blob_d)
-    return color_d, best.cx(), best.cy(), best.roundness(), best.density()
+    color_d = max(eq_d, blob_d)
+    return color_d, best.cx(), best.cy()
 
 
 def estimate_edge_strength(img, roi):
@@ -1651,79 +931,26 @@ def estimate_glare_ratio_pct(img, roi):
     return (bright_pixels * 100) // roi_pixels
 
 
-def maybe_boost_mid_ball_hough_diameter(diameter, bbox_d, close_mode=False):
-    if diameter is None or close_mode:
-        return diameter
-    if bbox_d < MID_BALL_HOUGH_BBOX_MIN or bbox_d > MID_BALL_HOUGH_BBOX_MAX:
-        return diameter
-    return int(((diameter * MID_BALL_HOUGH_DIAMETER_BOOST_PCT) + 50) // 100)
-
-
-def estimate_hough_circle(
-    img,
-    roi,
-    ref_cx,
-    ref_cy,
-    r_guess,
-    edge_strength,
-    glare_ratio_pct,
-    close_mode=False,
-    bbox_d=0,
-):
+def estimate_hough_circle(img, roi, ref_cx, ref_cy, r_guess, edge_strength, glare_ratio_pct):
     if glare_ratio_pct >= GLARE_RATIO_TH_PCT:
         hough_threshold = 3300 if edge_strength >= 24 else 2900
     else:
         hough_threshold = 3000 if edge_strength >= 24 else 2650
 
-    if close_mode:
-        hough_threshold = max(2200, hough_threshold - 150)
-
     r_guess = max(3, r_guess)
-    if close_mode:
-        r_min = max(4, (r_guess * 7) // 10)
-        r_max = min(CLOSE_HOUGH_R_MAX, (r_guess * 13) // 10)
-        x_margin = CLOSE_HOUGH_X_MARGIN
-        y_margin = CLOSE_HOUGH_Y_MARGIN
-        r_margin = CLOSE_HOUGH_R_MARGIN
-        x_stride = 2
-        y_stride = 2
-    else:
-        r_min = max(3, (r_guess * 7) // 10)
-        r_max = min(105, (r_guess * 13) // 10)
-        x_margin = 6
-        y_margin = 6
-        r_margin = 6
-        x_stride = 2
-        y_stride = 1
-
+    r_min = max(3, (r_guess * 7) // 10)
+    r_max = min(105, (r_guess * 13) // 10)
     if glare_ratio_pct >= GLARE_RATIO_TH_PCT:
         r_max = max(r_min, (r_max * 9) // 10)
-
-    if (not close_mode) and (bbox_d > 0) and (bbox_d <= FAR_BALL_SIZE_TH):
-        # 远距离小球时，限制霍夫半径，避免高亮区域被拟合成超大光圈。
-        far_r_min = max(2, (bbox_d * FAR_BALL_DIAMETER_RATIO_MIN_PCT) // 200)
-        far_r_max = max(
-            far_r_min,
-            min(
-                FAR_BALL_HOUGH_R_MAX, (bbox_d * FAR_BALL_DIAMETER_RATIO_MAX_PCT) // 200
-            ),
-        )
-        r_min = max(r_min, far_r_min)
-        r_max = min(r_max, far_r_max)
-
-    if r_max < r_min:
-        return None, ref_cx, ref_cy
 
     circles = img.find_circles(
         roi=roi,
         threshold=hough_threshold,
-        x_margin=x_margin,
-        y_margin=y_margin,
-        r_margin=r_margin,
+        x_margin=6,
+        y_margin=6,
+        r_margin=6,
         r_min=r_min,
         r_max=r_max,
-        x_stride=x_stride,
-        y_stride=y_stride,
         r_step=1,
     )
 
@@ -1737,10 +964,7 @@ def estimate_hough_circle(
         dy = c.y() - ref_cy
         center_cost = abs(dx) + abs(dy)
         radius_cost = abs(c.r() - r_guess)
-        if close_mode:
-            score = (center_cost * 3) + (radius_cost * 2)
-        else:
-            score = (center_cost * 2) + radius_cost - (c.r() // 4)
+        score = (center_cost * 2) + radius_cost - (c.r() // 4)
         if (best_score is None) or (score < best_score):
             best_score = score
             best = c
@@ -1751,11 +975,9 @@ def estimate_hough_circle(
     return best.r() * 2, best.x(), best.y()
 
 
-def estimate_tennis_diameter(img, x, y, w, h, allow_hough=True, close_mode=False):
+def estimate_tennis_diameter(img, x, y, w, h, allow_hough=True):
     ball_size = max(w, h)
-    if close_mode:
-        pad = max(CLOSE_BALL_ROI_PAD_MIN, (ball_size * 5) // 4)
-    elif ball_size < ROI_NEAR_SWITCH:
+    if ball_size < ROI_NEAR_SWITCH:
         pad = max(FAR_ROI_PAD_MIN, (ball_size * 2) // 3)
     else:
         pad = max(12, ball_size)
@@ -1769,96 +991,49 @@ def estimate_tennis_diameter(img, x, y, w, h, allow_hough=True, close_mode=False
     cy = y + (h // 2)
     bbox_d = max(w, h)
 
-    color_d, color_cx, color_cy, color_roundness, color_density = estimate_color_blob(
-        img, roi, cx, cy, bbox_d, close_mode=close_mode
-    )
+    color_d, color_cx, color_cy = estimate_color_blob(img, roi, cx, cy, bbox_d)
 
     hough_d = None
-    hough_cx = cx
-    hough_cy = cy
-    use_hough = allow_hough or close_mode
-    if use_hough:
+    if allow_hough:
         edge_strength = estimate_edge_strength(img, roi)
         glare_ratio_pct = estimate_glare_ratio_pct(img, roi)
         if color_d is not None:
             hough_guess = max(color_d // 2, bbox_d // 2)
         else:
             hough_guess = max(5, (bbox_d * 8) // 10)
-        hough_d, hough_cx, hough_cy = estimate_hough_circle(
-            img,
-            roi,
-            color_cx,
-            color_cy,
-            hough_guess,
-            edge_strength,
-            glare_ratio_pct,
-            close_mode=close_mode,
-            bbox_d=bbox_d,
-        )
-        hough_d = maybe_boost_mid_ball_hough_diameter(
-            hough_d, bbox_d, close_mode=close_mode
+        hough_d, _, _ = estimate_hough_circle(
+            img, roi, color_cx, color_cy, hough_guess, edge_strength, glare_ratio_pct
         )
     else:
         glare_ratio_pct = 0
 
     cue_conf = 0
-    measure_src = "bbox_close" if close_mode else "bbox"
     if (hough_d is not None) and (color_d is not None):
-        delta = abs(hough_d - color_d)
-        if close_mode:
-            if delta <= 10:
-                d = ((hough_d * 8) + (color_d * 2)) // 10
-                cue_conf = 2
-            else:
-                d = hough_d
-                cue_conf = 2
-            measure_src = "mix_close" if delta <= 10 else "hough_close"
-        elif delta <= 10:
+        if abs(hough_d - color_d) <= 10:
             d = ((hough_d * 5) + (color_d * 5)) // 10
             cue_conf = 2
-            measure_src = "mix"
         else:
             d = max(hough_d, color_d)
             cue_conf = 1
-            measure_src = "hough"
     elif hough_d is not None:
         d = hough_d
-        cue_conf = 2 if close_mode else 1
-        measure_src = "hough_close" if close_mode else "hough"
+        cue_conf = 1
     elif color_d is not None:
         d = color_d
         cue_conf = 1
-        measure_src = "lab_close" if close_mode else "lab"
     else:
         d = int((bbox_d * 13) // 10)
         cue_conf = 0
 
-    d = clamp(d, 4, 210)
-    d = clamp_diameter_by_bbox(d, bbox_d, close_mode=close_mode)
+    d = clamp(d, 8, 210)
 
     if (ball_size <= SMALL_BALL_SIZE_TH) and (glare_ratio_pct >= GLARE_RATIO_TH_PCT):
         glare_cap = max(8, (bbox_d * GLARE_DIAMETER_CAP_PCT) // 100)
         if d > glare_cap:
             d = glare_cap
         cue_conf = min(cue_conf, 1)
-        if hough_d is None:
-            measure_src = (
-                "lab_close" if color_d is not None and close_mode else measure_src
-            )
-            measure_src = (
-                "lab" if color_d is not None and not close_mode else measure_src
-            )
 
-    measure_cx = cx
-    measure_cy = cy
-    if hough_d is not None:
-        measure_cx = hough_cx
-        measure_cy = hough_cy
-    elif color_d is not None:
-        measure_cx = color_cx
-        measure_cy = color_cy
-
-    return d, cue_conf, measure_src, measure_cx, measure_cy
+    return d, cue_conf
 
 
 def estimate_ball_radius(w, h):
@@ -1872,21 +1047,14 @@ def estimate_ball_radius(w, h):
     return clamp(r, 4, 55)
 
 
-def fuse_tennis_radius(w, h, detected_diameter, close_mode=False):
-    circle_r = max(4, detected_diameter // 2)
-    long_side = max(w, h)
-    if close_mode:
-        r = circle_r
-        scale = CLOSE_DRAW_RADIUS_SCALE
-    elif long_side >= 20:
-        bbox_r = estimate_ball_radius(w, h)
+def fuse_tennis_radius(w, h, detected_diameter):
+    circle_r = detected_diameter // 2
+    bbox_r = estimate_ball_radius(w, h)
+    if max(w, h) >= 20:
         r = max(circle_r, bbox_r)
-        scale = DRAW_RADIUS_SCALE
     else:
-        bbox_r = estimate_ball_radius(w, h)
         r = max(circle_r, (bbox_r * 9) // 10)
-        scale = DRAW_RADIUS_SCALE
-    r = int((r * scale) + 0.5)
+    r = int((r * DRAW_RADIUS_SCALE) + 0.5)
     return clamp(r, 4, 105)
 
 
@@ -1935,9 +1103,7 @@ def trimmed_window_mean(values):
 
 
 def update_trimmed_tennis_measure(target, sample_diameter, sample_radius):
-    diameter_history = append_measure_window(
-        target.get("diameter_history"), sample_diameter
-    )
+    diameter_history = append_measure_window(target.get("diameter_history"), sample_diameter)
     radius_history = append_measure_window(target.get("radius_history"), sample_radius)
 
     target["diameter_history"] = diameter_history
@@ -1947,9 +1113,7 @@ def update_trimmed_tennis_measure(target, sample_diameter, sample_radius):
     filtered_radius = trimmed_window_mean(radius_history)
 
     if filtered_diameter is None:
-        filtered_diameter = (
-            int(sample_diameter) if sample_diameter is not None else None
-        )
+        filtered_diameter = int(sample_diameter) if sample_diameter is not None else None
     if filtered_radius is None:
         filtered_radius = int(sample_radius) if sample_radius is not None else None
 
@@ -2032,12 +1196,8 @@ def refresh_scan_target_measure(target, sample_target=None):
     sample_radius = scan_sample_radius(sample)
     sample_diameter = scan_sample_diameter(sample)
 
-    radius_history = append_measure_window(
-        target.get("scan_radius_history"), sample_radius
-    )
-    diameter_history = append_measure_window(
-        target.get("scan_diameter_history"), sample_diameter
-    )
+    radius_history = append_measure_window(target.get("scan_radius_history"), sample_radius)
+    diameter_history = append_measure_window(target.get("scan_diameter_history"), sample_diameter)
     target["scan_radius_history"] = radius_history
     target["scan_diameter_history"] = diameter_history
 
@@ -2060,8 +1220,8 @@ def refresh_scan_target_measure(target, sample_target=None):
         target["refined_diameter"] = lock_diameter
 
     lock_dist_cm = None
-    if lock_diameter is not None:
-        lock_dist_cm = estimate_corrected_distance_cm(lock_diameter)
+    if (lock_diameter is not None) and (lock_radius is not None):
+        lock_dist_cm = estimate_corrected_distance_cm(lock_diameter, lock_radius)
     if lock_dist_cm is None:
         lock_dist_cm = target.get("dist_cm")
 
@@ -2113,132 +1273,14 @@ def is_live_target(target):
     return target is not None and target.get("miss", 0) == 0
 
 
-def reset_pick_confirm_window():
-    global pick_confirm_total_frames, pick_confirm_seen_frames
-
-    pick_confirm_total_frames = 0
-    pick_confirm_seen_frames = 0
-
-
-def note_pick_confirm_frame(seen):
-    global pick_confirm_total_frames, pick_confirm_seen_frames
-
-    pick_confirm_total_frames += 1
-    if seen:
-        pick_confirm_seen_frames += 1
-
-
-def pick_confirm_ready_to_lock():
-    if pick_confirm_total_frames <= 0:
-        return False
-    if pick_confirm_total_frames > PICK_EARLY_LOCK_WINDOW_FRAMES:
-        return False
-    return pick_confirm_seen_frames >= PICK_EARLY_LOCK_SEEN_FRAMES
-
-
-def reset_pick_scan_fail_rounds():
-    global pick_scan_fail_rounds
-
-    pick_scan_fail_rounds = 0
-
-
-def reset_play_hit_state():
-    global play_presence_window, play_hit_latched, play_ready_frames
-
-    play_presence_window = []
-    play_hit_latched = False
-    play_ready_frames = 0
-
-
-def reset_play_lock_state():
-    global player_lock_window, player_locked
-
-    player_lock_window = []
-    player_locked = False
-
-
-def update_player_lock_state(player_present):
-    global player_lock_window, player_locked
-
-    player_lock_window.append(1 if player_present else 0)
-    if len(player_lock_window) > PLAYER_LOCK_WINDOW_FRAMES:
-        player_lock_window.pop(0)
-
-    if player_present:
-        player_locked = True
+def target_lost_timeout(last_seen_ms, now_ms):
+    if last_seen_ms <= 0:
         return True
-
-    if not player_locked:
-        return False
-
-    if len(player_lock_window) < PLAYER_LOCK_WINDOW_FRAMES:
-        return True
-
-    player_hits = 0
-    for hit in player_lock_window:
-        player_hits += hit
-
-    if player_hits < PLAYER_LOCK_MIN_HIT_FRAMES:
-        player_locked = False
-        return False
-    return True
-
-
-def note_play_presence(player_present, racket_present):
-    global play_presence_window, play_hit_latched, play_ready_frames
-
-    flags = 0
-    if player_present:
-        flags |= 1
-    if racket_present:
-        flags |= 2
-
-    play_presence_window.append(flags)
-    if len(play_presence_window) > PLAY_HIT_WINDOW_FRAMES:
-        play_presence_window.pop(0)
-
-    player_hits = 0
-    racket_hits = 0
-    for state in play_presence_window:
-        if state & 1:
-            player_hits += 1
-        if state & 2:
-            racket_hits += 1
-
-    play_ready_frames = min(player_hits, racket_hits)
-    ready = (
-        player_hits >= PLAY_HIT_MIN_PLAYER_FRAMES
-        and racket_hits >= PLAY_HIT_MIN_RACKET_FRAMES
-    )
-    if ready and (not play_hit_latched):
-        play_hit_latched = True
-        return True
-    if not ready:
-        play_hit_latched = False
-    return False
-
-
-def handle_pick_scan_round_failed(racket_present, racket_target, command_event):
-    global pick_scan_fail_rounds
-
-    pick_scan_fail_rounds += 1
-    if pick_scan_fail_rounds >= PICK_SCAN_FAIL_ROUNDS_TO_PLAY:
-        enter_play_mode()
-        return None, "PLAY", "TRACK_P", False, None, command_event
-
-    begin_scan_round()
-    return None, "SEEK", "SCAN", racket_present, racket_target, command_event
-
-
-def clear_pick_unlock_events():
-    global picker_uart_done_pending, host_track_unlock_pending
-
-    picker_uart_done_pending = 0
-    host_track_unlock_pending = 0
+    return time.ticks_diff(now_ms, last_seen_ms) >= TARGET_LOST_TIMEOUT_MS
 
 
 def is_racket_linked_to_player(player_target, racket_target):
-    if player_target is None or racket_target is None:
+    if (not is_live_target(player_target)) or racket_target is None:
         return False
 
     required_keys = ("x", "y", "w", "h", "cx", "cy")
@@ -2264,16 +1306,27 @@ def is_racket_linked_to_player(player_target, racket_target):
 
     if rcx < left or rcx > right or rcy < top or rcy > bottom:
         return False
+
     if rh > int(ph * 12 / 10):
         return False
     if rw > int(pw * 9 / 10):
         return False
+
     return True
 
 
 def choose_racket_target(candidates, player_target=None):
     if not candidates:
         return None
+
+    if is_live_target(player_target):
+        linked_candidates = []
+        for cand in candidates:
+            if is_racket_linked_to_player(player_target, cand):
+                linked_candidates.append(cand)
+        candidates = linked_candidates
+        if not candidates:
+            return None
 
     best = None
     best_key = None
@@ -2282,7 +1335,7 @@ def choose_racket_target(candidates, player_target=None):
         center_dy = cand["cy"] - 120
         center_d2 = (center_dx * center_dx) + (center_dy * center_dy)
         area = cand["w"] * cand["h"]
-        if player_target is not None:
+        if is_live_target(player_target):
             player_dx = abs(cand["cx"] - player_target["cx"])
             player_dy = abs(cand["cy"] - player_target["cy"])
             player_d = player_dx + player_dy
@@ -2307,19 +1360,30 @@ def uart_write_line(line):
         sys.print_exception(err)
 
 
-def send_runtime_packets(mode_name, state_name, target):
-    if uart is None:
-        return
-    if mode_name != "SEEK" or state_name != "TRACK":
-        return
-    if (frame_index % UART_SEND_INTERVAL_FRAMES) != 0:
-        return
-    if (not is_live_target(target)) or target.get("kind") != "tennis":
-        return
+def choose_uart_ball_target(mode_name, tennis_candidates, active_target):
+    if mode_name == "PLAY":
+        return None
 
-    row = int(target.get("row", -1))
-    col = int(target.get("col", -1))
-    distance_cm = target_distance_cm(target)
+    nearest_target = choose_nearest_tennis(tennis_candidates)
+    if nearest_target is not None:
+        return nearest_target
+
+    if is_live_target(active_target) and active_target.get("kind") == "tennis":
+        return active_target
+
+    return None
+
+
+def send_runtime_packets(mode_name, target):
+    row = -1
+    col = -1
+    distance_cm = 0.0
+
+    if is_live_target(target) and target.get("kind") == "tennis":
+        row = int(target.get("row", -1))
+        col = int(target.get("col", -1))
+        distance_cm = target_distance_cm(target)
+
     uart_write_line("%s,%d,%d,%.1f" % (mode_name, row, col, distance_cm))
 
 
@@ -2340,7 +1404,7 @@ def age_and_prune_tracks():
 
     if tracked_tennis is not None:
         tracked_tennis["miss"] += 1
-        if tracked_tennis["miss"] > TENNIS_TRACK_MAX_MISS:
+        if tracked_tennis["miss"] > TRACK_MAX_MISS:
             tracked_tennis = None
     return tracked_tennis
 
@@ -2405,13 +1469,10 @@ def match_tennis_track(candidates):
     tracked_tennis["row"] = best["row"]
     tracked_tennis["col"] = best["col"]
     tracked_tennis["kind"] = best["kind"]
-    tracked_tennis["merge_count"] = int(best.get("merge_count", 1))
     if "measure_src" in best:
         tracked_tennis["measure_src"] = best["measure_src"]
     if "cue_conf" in best:
         tracked_tennis["cue_conf"] = best["cue_conf"]
-    if "close_fit" in best:
-        tracked_tennis["close_fit"] = best["close_fit"]
     if "refined_diameter" in best:
         tracked_tennis["refined_diameter"] = best["refined_diameter"]
     if "refined_radius" in best:
@@ -2426,10 +1487,8 @@ def match_tennis_track(candidates):
         )
         if filtered_radius is not None:
             tracked_tennis["radius"] = filtered_radius
-        if filtered_diameter is not None:
-            tracked_tennis["dist_cm"] = estimate_corrected_distance_cm(
-                filtered_diameter
-            )
+        if (filtered_diameter is not None) and (filtered_radius is not None):
+            tracked_tennis["dist_cm"] = estimate_corrected_distance_cm(filtered_diameter, filtered_radius)
             tracked_tennis["refined_dist_cm"] = tracked_tennis["dist_cm"]
     tracked_tennis["miss"] = 0
     return tracked_tennis
@@ -2441,7 +1500,7 @@ def choose_player_target(candidates):
     if not candidates:
         if tracked_player is not None:
             tracked_player["miss"] += 1
-            if tracked_player["miss"] > PLAYER_TRACK_MAX_MISS:
+            if tracked_player["miss"] > TRACK_MAX_MISS:
                 tracked_player = None
         return tracked_player
 
@@ -2471,17 +1530,14 @@ def choose_player_target(candidates):
 
 
 def draw_active_target(img, target, mode_name, state_name):
-    if target is None:
+    if target is None or target.get("miss", 0) > 0:
         img.draw_string(2, 74, "target:search", color=YELLOW, mono_space=False)
         return
 
-    target_missing = target.get("miss", 0) > 0
     cx = clamp(target["cx"], 0, img.width() - 1)
     cy = clamp(target["cy"], 0, img.height() - 1)
-    radius = clamp(target["radius"], 4, 55)
+    radius = clamp(target["radius"], 8, 50)
     kind = target.get("kind", "target").lower()
-    draw_cx = cx
-    draw_cy = cy
 
     if kind == "tennis":
         target_color = GREEN
@@ -2493,7 +1549,7 @@ def draw_active_target(img, target, mode_name, state_name):
         target_color = YELLOW
 
     show_lock_circle = True
-    if (mode_name == "SEEK") and (kind == "tennis") and (not target_missing):
+    if (mode_name == "SEEK") and (kind == "tennis"):
         if state_name == "RETURN":
             show_lock_circle = False
         elif state_name == "CONFIRM":
@@ -2504,89 +1560,46 @@ def draw_active_target(img, target, mode_name, state_name):
         dx, dy = target_center_error(target, img)
         img.draw_string(2, 92, "dx:%d dy:%d" % (dx, dy), color=WHITE, mono_space=False)
         if target["dist_cm"] is not None:
-            img.draw_string(
-                2, 110, "dist:%.1fcm" % target["dist_cm"], color=WHITE, mono_space=False
-            )
+            img.draw_string(2, 110, "dist:%.1fcm" % target["dist_cm"], color=WHITE, mono_space=False)
         return
 
-    if (kind == "player") and target_missing and (mode_name == "PLAY"):
-        draw_cx = img.width() // 2
-        draw_cy = img.height() // 2
-
     if (kind == "racket") and all(k in target for k in ("x", "y", "w", "h")):
-        img.draw_rectangle(
-            (target["x"], target["y"], target["w"], target["h"]),
-            color=target_color,
-            thickness=2,
-        )
+        img.draw_rectangle((target["x"], target["y"], target["w"], target["h"]), color=target_color, thickness=2)
     else:
-        img.draw_circle((draw_cx, draw_cy, radius + 3), color=target_color)
-    img.draw_cross(draw_cx, draw_cy, color=WHITE, size=10, thickness=2)
-    if (draw_cx != (img.width() // 2)) or (draw_cy != (img.height() // 2)):
-        img.draw_line(
-            (img.width() // 2, img.height() // 2, draw_cx, draw_cy), color=target_color
-        )
+        img.draw_circle((cx, cy, radius + 3), color=target_color)
+    img.draw_cross(cx, cy, color=WHITE, size=10, thickness=2)
+    img.draw_line((img.width() // 2, img.height() // 2, cx, cy), color=target_color)
 
     kind_label = target.get("kind", "target").upper()
-    status_text = (
-        "%s HOLD" % kind_label[:6] if target_missing else "%s LOCK" % kind_label[:6]
-    )
-    status_color = (
-        target_color
-        if ((kind == "player") and target_missing)
-        else (YELLOW if target_missing else target_color)
-    )
-    img.draw_string(2, 74, status_text, color=status_color, mono_space=False)
+    img.draw_string(2, 74, "%s LOCK" % kind_label[:6], color=target_color, mono_space=False)
     img.draw_string(
         2,
         92,
-        "dx:%d dy:%d" % (draw_cx - (img.width() // 2), draw_cy - (img.height() // 2)),
+        "dx:%d dy:%d" % (cx - (img.width() // 2), cy - (img.height() // 2)),
         color=WHITE,
         mono_space=False,
     )
     if target["dist_cm"] is not None:
-        img.draw_string(
-            2, 110, "dist:%.1fcm" % target["dist_cm"], color=WHITE, mono_space=False
-        )
+        img.draw_string(2, 110, "dist:%.1fcm" % target["dist_cm"], color=WHITE, mono_space=False)
     else:
         img.draw_string(
             2,
             110,
-            "grid:(%d,%d)" % (int(target.get("row", -1)), int(target.get("col", -1))),
+            "grid:(%d,%d)" % (target["row"], target["col"]),
             color=WHITE,
             mono_space=False,
         )
-    if target_missing:
-        img.draw_string(
-            2,
-            128,
-            "miss:%d" % int(target.get("miss", 0)),
-            color=YELLOW,
-            mono_space=False,
-        )
-    elif "measure_src" in target:
-        img.draw_string(
-            2, 128, "measure:%s" % target["measure_src"], color=WHITE, mono_space=False
-        )
+    if "measure_src" in target:
+        img.draw_string(2, 128, "measure:%s" % target["measure_src"], color=WHITE, mono_space=False)
 
 
-def draw_racket_target(img, target):
-    if target is None:
-        return
-    if not all(k in target for k in ("x", "y", "w", "h", "cx", "cy")):
-        return
+def draw_centered_text(img, text, y, color, scale=1):
+    char_w = 8 * scale
+    text_w = len(text) * char_w
+    x = max(0, (img.width() - text_w) // 2)
 
-    x = int(clamp(target["x"], 0, img.width() - 1))
-    y = int(clamp(target["y"], 0, img.height() - 1))
-    w = int(clamp(target["w"], 1, img.width() - x))
-    h = int(clamp(target["h"], 1, img.height() - y))
-    cx = int(clamp(target["cx"], 0, img.width() - 1))
-    cy = int(clamp(target["cy"], 0, img.height() - 1))
-    label_y = y - 14 if y >= 14 else y + h + 2
-
-    img.draw_rectangle((x, y, w, h), color=RED, thickness=2)
-    img.draw_cross(cx, cy, color=RED, size=8, thickness=2)
-    img.draw_string(x, label_y, "RACKET", color=RED, mono_space=False)
+    img.draw_string(x + 2, y + 2, text, color=(0, 0, 0), scale=scale, mono_space=True)
+    img.draw_string(x, y, text, color=color, scale=scale, mono_space=True)
 
 
 def draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates):
@@ -2600,6 +1613,11 @@ def draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates):
         cy = clamp(cand["cy"], 0, img.height() - 1)
         radius = clamp(cand["radius"], 8, 50)
         img.draw_circle((cx, cy, radius), color=GREEN, thickness=2)
+
+
+def draw_player_countdown(img, mode_name, racket_present):
+    # 击球模式切回捡球改为由主机显式解锁后，不再显示本地倒计时。
+    return
 
 
 def update_servo_tracking(target, img):
@@ -2620,8 +1638,8 @@ def update_servo_tracking(target, img):
     if -SERVO_DEADBAND < tilt_error < SERVO_DEADBAND:
         tilt_error = 0
 
-    pan_output = (pan_pid.get_pid(pan_error, 1) / 2) * SERVO_SPEED_SCALE
-    tilt_output = tilt_pid.get_pid(tilt_error, 1) * SERVO_SPEED_SCALE
+    pan_output = pan_pid.get_pid(pan_error, 1) / 2
+    tilt_output = tilt_pid.get_pid(tilt_error, 1)
 
     apply_pan_delta(-pan_output, TRACK_PAN_MAX_STEP)
     apply_tilt_delta(tilt_output, TRACK_TILT_MAX_STEP)
@@ -2639,7 +1657,7 @@ def update_tilt_tracking(target, img):
     if -SERVO_DEADBAND < tilt_error < SERVO_DEADBAND:
         tilt_error = 0
 
-    tilt_output = tilt_pid.get_pid(tilt_error, 1) * SERVO_SPEED_SCALE
+    tilt_output = tilt_pid.get_pid(tilt_error, 1)
     apply_tilt_delta(tilt_output, TRACK_TILT_MAX_STEP)
 
 
@@ -2692,9 +1710,7 @@ def update_servo_init():
         return False
 
     start_pan_pwm()
-    if servo_init_frames_remaining <= (
-        SERVO_INIT_HOLD_FRAMES - SERVO_PWM_STAGGER_FRAMES
-    ):
+    if servo_init_frames_remaining <= (SERVO_INIT_HOLD_FRAMES - SERVO_PWM_STAGGER_FRAMES):
         start_tilt_pwm()
 
     move_pan_toward(PAN_INIT_ANGLE, SERVO_INIT_STEP)
@@ -2725,14 +1741,8 @@ def is_same_scan_target(saved_target, new_target):
 
     row_diff = abs(saved_target["row"] - new_target["row"])
     col_diff = abs(saved_target["col"] - new_target["col"])
-    pan_diff = abs(
-        saved_target.get("servo_pan", PAN_INIT_ANGLE)
-        - new_target.get("servo_pan", PAN_INIT_ANGLE)
-    )
-    tilt_diff = abs(
-        saved_target.get("servo_tilt", TILT_INIT_ANGLE)
-        - new_target.get("servo_tilt", TILT_INIT_ANGLE)
-    )
+    pan_diff = abs(saved_target.get("servo_pan", PAN_INIT_ANGLE) - new_target.get("servo_pan", PAN_INIT_ANGLE))
+    tilt_diff = abs(saved_target.get("servo_tilt", TILT_INIT_ANGLE) - new_target.get("servo_tilt", TILT_INIT_ANGLE))
 
     dist_a = saved_target.get("dist_cm")
     dist_b = new_target.get("dist_cm")
@@ -2814,33 +1824,34 @@ def remember_scan_target(target, img=None, observed_pan=None, observed_tilt=None
 
 
 def begin_scan_round():
-    global pick_substate, scan_seek_left, scan_direction
+    global pick_substate, scan_seek_left, scan_direction, scan_lock_count
     global nearest_switch_count, best_scan_tennis, tracked_tennis
-    global scan_ranked_tennis, scan_candidate_index
-    global scan_tilt_reset_pending, pick_track_lost_count
+    global scan_ranked_tennis, scan_candidate_index, pick_confirm_start_ms, last_tennis_seen_ms
+    global scan_tilt_reset_pending
 
     pick_substate = PICK_SCAN
     scan_seek_left = True
     scan_tilt_reset_pending = True
     scan_direction = 1
+    scan_lock_count = 0
     nearest_switch_count = 0
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
     tracked_tennis = None
-    reset_pick_confirm_window()
-    pick_track_lost_count = 0
+    pick_confirm_start_ms = 0
+    last_tennis_seen_ms = 0
 
 
-def update_global_scan(img, tennis_candidates):
+def update_global_scan(img, nearest_tennis):
     global scan_seek_left, pan_angle, tilt_angle, scan_tilt_reset_pending
 
     observed_pan = pan_angle
     observed_tilt = TILT_INIT_ANGLE
 
     if not ENABLE_SERVOS:
-        for cand in tennis_candidates:
-            remember_scan_target(cand, img, observed_pan, observed_tilt)
+        if nearest_tennis is not None:
+            remember_scan_target(nearest_tennis, img, observed_pan, observed_tilt)
         return len(scan_ranked_tennis) > 0
 
     if scan_tilt_reset_pending:
@@ -2861,9 +1872,8 @@ def update_global_scan(img, tennis_candidates):
 
     apply_pan_delta(SCAN_PAN_STEP, SCAN_PAN_STEP)
     tilt_angle = TILT_INIT_ANGLE
-
-    for cand in tennis_candidates:
-        remember_scan_target(cand, img, observed_pan, observed_tilt)
+    if nearest_tennis is not None:
+        remember_scan_target(nearest_tennis, img, observed_pan, observed_tilt)
 
     if pan_angle >= (pan_angle_limit[1] - SCAN_ALIGN_MARGIN):
         pan_angle = pan_angle_limit[1]
@@ -2875,19 +1885,12 @@ def update_return_to_saved_target():
     if best_scan_tennis is None:
         return True
 
-    target_pan = best_scan_tennis.get(
-        "lock_pan", best_scan_tennis.get("servo_pan", PAN_INIT_ANGLE)
-    )
+    target_pan = best_scan_tennis.get("lock_pan", best_scan_tennis.get("servo_pan", PAN_INIT_ANGLE))
     move_pan_toward(target_pan, RETURN_PAN_STEP)
-    move_tilt_toward(
-        best_scan_tennis.get("servo_tilt", TILT_INIT_ANGLE), RETURN_TILT_STEP
-    )
+    move_tilt_toward(best_scan_tennis.get("servo_tilt", TILT_INIT_ANGLE), RETURN_TILT_STEP)
 
     pan_ok = abs(pan_angle - target_pan) <= RETURN_LOCK_MARGIN
-    tilt_ok = (
-        abs(tilt_angle - best_scan_tennis.get("servo_tilt", TILT_INIT_ANGLE))
-        <= RETURN_LOCK_MARGIN
-    )
+    tilt_ok = abs(tilt_angle - best_scan_tennis.get("servo_tilt", TILT_INIT_ANGLE)) <= RETURN_LOCK_MARGIN
     return pan_ok and tilt_ok
 
 
@@ -2916,12 +1919,7 @@ def choose_confirmed_scan_target(saved_target, candidates):
         cand_radius = scan_sample_radius(cand)
         if cand_radius is None:
             cand_radius = 0
-        key = (
-            d2 + dist_penalty,
-            -cand_radius,
-            -(cand["w"] * cand["h"]),
-            -int(cand["score"] * 1000),
-        )
+        key = (d2 + dist_penalty, -cand_radius, -(cand["w"] * cand["h"]), -int(cand["score"] * 1000))
         if (best_key is None) or (key < best_key):
             best_key = key
             best = cand
@@ -2946,35 +1944,11 @@ def choose_confirmed_scan_target(saved_target, candidates):
     return matched
 
 
-def choose_local_nearest_tennis(saved_target, candidates):
-    if saved_target is None or not candidates:
-        return None
-
-    local = []
-    gate = max(
-        LOCAL_NEAREST_GATE_MIN,
-        saved_target.get("radius", 12) * LOCAL_NEAREST_GATE_RADIUS_SCALE,
-    )
-    gate2 = gate * gate
-
-    for cand in candidates:
-        dx = cand["cx"] - saved_target["cx"]
-        dy = cand["cy"] - saved_target["cy"]
-        d2 = (dx * dx) + (dy * dy)
-        if d2 <= gate2:
-            local.append(cand)
-
-    if not local:
-        return None
-
-    return choose_nearest_tennis(local)
-
-
 def select_next_scan_candidate():
-    global tracked_tennis
+    global tracked_tennis, pick_confirm_start_ms
 
     tracked_tennis = None
-    reset_pick_confirm_window()
+    pick_confirm_start_ms = 0
     return select_scan_candidate(scan_candidate_index + 1)
 
 
@@ -3019,37 +1993,6 @@ def should_switch_to_nearest(current_target, nearest_tennis):
     return False
 
 
-def switch_tracked_target_to_nearest(current_target, nearest_target):
-    if nearest_target is None:
-        return current_target
-
-    switched = nearest_target.copy()
-
-    if current_target is not None:
-        if "diameter_history" in current_target and "diameter_history" not in switched:
-            switched["diameter_history"] = list(current_target["diameter_history"])
-        if "radius_history" in current_target and "radius_history" not in switched:
-            switched["radius_history"] = list(current_target["radius_history"])
-        if (
-            "scan_radius_history" in current_target
-            and "scan_radius_history" not in switched
-        ):
-            switched["scan_radius_history"] = list(
-                current_target["scan_radius_history"]
-            )
-        if (
-            "scan_diameter_history" in current_target
-            and "scan_diameter_history" not in switched
-        ):
-            switched["scan_diameter_history"] = list(
-                current_target["scan_diameter_history"]
-            )
-
-    ensure_target_id(switched)
-    switched["miss"] = 0
-    return switched
-
-
 def update_scan_motion(img, nearest_tennis):
     global pan_angle, scan_direction, tilt_angle
 
@@ -3075,23 +2018,25 @@ def update_scan_motion(img, nearest_tennis):
 
 
 def enter_pick_mode():
-    global mode, pick_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, nearest_switch_count, play_ready_frames
-    global play_presence_window, play_hit_latched
-    global best_scan_tennis, tracked_tennis, tracked_player
+    global mode, pick_substate, play_substate, capture_cmd, capture_flash_frames
+    global player_locked, balls_served, scan_lock_count, nearest_switch_count, play_ready_frames
+    global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player
     global scan_ranked_tennis, scan_candidate_index
-    global scan_seek_left, scan_direction, current_racket_id
+    global scan_seek_left, scan_direction, pick_confirm_start_ms, current_racket_id
     global scan_tilt_reset_pending
-    global pick_track_lost_count, pick_scan_fail_rounds
+    global last_tennis_seen_ms, last_player_seen_ms
 
     mode = MODE_PICK
     pick_substate = PICK_SCAN
+    play_substate = PLAY_TRACK_PLAYER
     capture_cmd = 0
     capture_flash_frames = 0
     player_locked = False
     balls_served = 0
+    scan_lock_count = 0
     nearest_switch_count = 0
     play_ready_frames = 0
+    racket_seen_prev = False
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
@@ -3100,60 +2045,57 @@ def enter_pick_mode():
     scan_seek_left = True
     scan_tilt_reset_pending = True
     scan_direction = 1
-    reset_pick_confirm_window()
-    reset_play_lock_state()
-    reset_play_hit_state()
+    pick_confirm_start_ms = 0
     current_racket_id = 0
-    pick_track_lost_count = 0
-    pick_scan_fail_rounds = 0
+    last_tennis_seen_ms = 0
+    last_player_seen_ms = 0
 
 
 def enter_play_mode():
-    global mode, pick_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, nearest_switch_count, play_ready_frames
-    global play_presence_window, play_hit_latched
-    global best_scan_tennis, tracked_tennis, tracked_player, current_racket_id
+    global mode, pick_substate, play_substate, capture_cmd, capture_flash_frames
+    global player_locked, balls_served, scan_lock_count, nearest_switch_count, play_ready_frames
+    global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player, current_racket_id
     global scan_ranked_tennis, scan_candidate_index
-    global scan_direction, pick_track_lost_count, pick_scan_fail_rounds
+    global scan_direction, pick_confirm_start_ms, last_tennis_seen_ms, last_player_seen_ms
 
     mode = MODE_PLAY
     pick_substate = PICK_SCAN
+    play_substate = PLAY_TRACK_PLAYER
     capture_cmd = 0
     capture_flash_frames = 0
     player_locked = False
     balls_served = 0
+    scan_lock_count = 0
     nearest_switch_count = 0
     play_ready_frames = 0
+    racket_seen_prev = False
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
     scan_direction = 1
-    reset_pick_confirm_window()
-    reset_play_lock_state()
-    reset_play_hit_state()
+    pick_confirm_start_ms = 0
     tracked_tennis = None
     tracked_player = None
     current_racket_id = 0
-    pick_track_lost_count = 0
-    pick_scan_fail_rounds = 0
-    lift_tilt_for_play_mode()
+    last_tennis_seen_ms = 0
+    last_player_seen_ms = 0
 
 
-def run_state_machine(
-    img, tennis_target, tennis_candidates, player_target, racket_candidates
-):
-    global mode, pick_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, play_ready_frames
-    global nearest_switch_count, best_scan_tennis, tracked_tennis
+def run_state_machine(img, tennis_target, tennis_candidates, player_target, racket_candidates):
+    global mode, pick_substate, play_substate, capture_cmd, capture_flash_frames
+    global player_locked, balls_served, play_ready_frames, racket_seen_prev
+    global scan_lock_count, nearest_switch_count, best_scan_tennis, tracked_tennis
     global scan_ranked_tennis, scan_candidate_index
-    global current_racket_id
-    global pick_track_lost_count
+    global pick_confirm_start_ms, current_racket_id, last_tennis_seen_ms, last_player_seen_ms
 
     command_event = None
-    player_live = is_live_target(player_target)
     racket_target = choose_racket_target(racket_candidates, player_target)
     racket_visible = racket_target is not None
-    racket_present = racket_visible
+    if is_live_target(player_target) and racket_visible:
+        play_ready_frames += 1
+    else:
+        play_ready_frames = 0
+    racket_present = play_ready_frames >= PLAY_RACKET_CONFIRM_FRAMES
     if racket_present:
         if current_racket_id <= 0:
             current_racket_id = allocate_target_id()
@@ -3163,11 +2105,14 @@ def run_state_machine(
         racket_target = None
     nearest_tennis = choose_nearest_tennis(tennis_candidates)
     active_target = tennis_target
+    now_ms = time.ticks_ms()
     host_ctrl_ok = host_control_enabled()
     requested_mode = -1
+    host_unlock_track = False
 
     if host_ctrl_ok:
         requested_mode = consume_host_mode_switch_event()
+        host_unlock_track = consume_host_track_unlock_event()
 
     if requested_mode == MODE_PICK and mode != MODE_PICK:
         enter_pick_mode()
@@ -3187,229 +2132,120 @@ def run_state_machine(
     if mode == MODE_PICK:
         if pick_substate == PICK_SCAN:
             if update_servo_init():
-                return (
-                    None,
-                    "INIT",
-                    "INIT",
-                    racket_present,
-                    racket_target,
-                    command_event,
-                )
+                return None, "INIT", "INIT", racket_present, racket_target, command_event
 
-            scan_done = update_global_scan(img, tennis_candidates)
+            scan_done = update_global_scan(img, nearest_tennis)
             if scan_done:
                 if len(scan_ranked_tennis) > 0 and select_scan_candidate(0):
                     tracked_tennis = None
-                    reset_pick_confirm_window()
+                    pick_confirm_start_ms = 0
                     pick_substate = PICK_RETURN
                 else:
-                    return handle_pick_scan_round_failed(
-                        racket_present, racket_target, command_event
-                    )
+                    begin_scan_round()
             # 扫描阶段只记录候选，不提前锁定或显示跟踪目标。
             return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
         if pick_substate == PICK_RETURN:
             if best_scan_tennis is None:
                 if not select_scan_candidate(scan_candidate_index):
-                    return handle_pick_scan_round_failed(
-                        racket_present, racket_target, command_event
-                    )
+                    begin_scan_round()
+                    return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
             active_target = best_scan_tennis
             if update_return_to_saved_target():
-                reset_pick_confirm_window()
+                pick_confirm_start_ms = 0
                 pick_substate = PICK_CONFIRM
-            return (
-                active_target,
-                "SEEK",
-                "RETURN",
-                racket_present,
-                racket_target,
-                command_event,
-            )
+            return active_target, "SEEK", "RETURN", racket_present, racket_target, command_event
 
         if pick_substate == PICK_CONFIRM:
             if best_scan_tennis is None:
                 if select_next_scan_candidate():
                     pick_substate = PICK_RETURN
-                    return (
-                        best_scan_tennis,
-                        "SEEK",
-                        "RETURN",
-                        racket_present,
-                        racket_target,
-                        command_event,
-                    )
-                return handle_pick_scan_round_failed(
-                    racket_present, racket_target, command_event
-                )
+                    return best_scan_tennis, "SEEK", "RETURN", racket_present, racket_target, command_event
+                begin_scan_round()
+                return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
-            confirmed_target = choose_local_nearest_tennis(
-                best_scan_tennis, tennis_candidates
-            )
+            confirmed_target = choose_confirmed_scan_target(best_scan_tennis, tennis_candidates)
             if confirmed_target is None:
-                confirmed_target = choose_confirmed_scan_target(
-                    best_scan_tennis, tennis_candidates
-                )
-
-            if confirmed_target is not None:
-                note_pick_confirm_frame(True)
-                best_scan_tennis = confirmed_target.copy()
-                active_target = best_scan_tennis
-                update_target_lock_pan(active_target, img)
-            else:
-                note_pick_confirm_frame(False)
-                active_target = best_scan_tennis
-
-            if pick_confirm_ready_to_lock() and best_scan_tennis is not None:
-                tracked_tennis = best_scan_tennis.copy()
-                ensure_target_id(tracked_tennis, int(best_scan_tennis.get("id", 0)))
-                tracked_tennis["miss"] = 0
-                reset_pick_confirm_window()
-                reset_pick_scan_fail_rounds()
-                clear_pick_unlock_events()
-                pick_track_lost_count = 0
-                pick_substate = PICK_TRACK
-                return (
-                    tracked_tennis,
-                    "SEEK",
-                    "TRACK",
-                    racket_present,
-                    racket_target,
-                    command_event,
-                )
-
-            if pick_confirm_total_frames >= PICK_CONFIRM_MAX_FRAMES:
-                if (
-                    pick_confirm_seen_frames >= PICK_FINAL_LOCK_MIN_SEEN_FRAMES
-                ) and best_scan_tennis is not None:
-                    tracked_tennis = best_scan_tennis.copy()
-                    ensure_target_id(tracked_tennis, int(best_scan_tennis.get("id", 0)))
-                    tracked_tennis["miss"] = 0
-                    reset_pick_confirm_window()
-                    reset_pick_scan_fail_rounds()
-                    clear_pick_unlock_events()
-                    pick_track_lost_count = 0
-                    pick_substate = PICK_TRACK
-                    return (
-                        tracked_tennis,
-                        "SEEK",
-                        "TRACK",
-                        racket_present,
-                        racket_target,
-                        command_event,
-                    )
-
                 if select_next_scan_candidate():
                     pick_substate = PICK_RETURN
-                    return (
-                        best_scan_tennis,
-                        "SEEK",
-                        "RETURN",
-                        racket_present,
-                        racket_target,
-                        command_event,
-                    )
-                return handle_pick_scan_round_failed(
-                    racket_present, racket_target, command_event
-                )
+                    return best_scan_tennis, "SEEK", "RETURN", racket_present, racket_target, command_event
+                begin_scan_round()
+                return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
-            return (
-                active_target,
-                "SEEK",
-                "CONFIRM",
-                racket_present,
-                racket_target,
-                command_event,
-            )
+            best_scan_tennis = confirmed_target.copy()
+            active_target = best_scan_tennis
+            update_target_lock_pan(active_target, img)
+            update_servo_tracking(active_target, img)
+            lock_ready = target_is_aligned(active_target, img)
+
+            if not lock_ready:
+                pick_confirm_start_ms = 0
+                return active_target, "SEEK", "CONFIRM", racket_present, racket_target, command_event
+
+            if pick_confirm_start_ms <= 0:
+                pick_confirm_start_ms = now_ms
+
+            if time.ticks_diff(now_ms, pick_confirm_start_ms) >= PICK_CONFIRM_DURATION_MS:
+                tracked_tennis = active_target.copy()
+                ensure_target_id(tracked_tennis, int(confirmed_target.get("id", 0)))
+                tracked_tennis["miss"] = 0
+                pick_confirm_start_ms = 0
+                last_tennis_seen_ms = now_ms
+                pick_substate = PICK_TRACK
+                return tracked_tennis, "SEEK", "TRACK", racket_present, racket_target, command_event
+
+            return active_target, "SEEK", "CONFIRM", racket_present, racket_target, command_event
 
         active_target = tennis_target if tennis_target is not None else tracked_tennis
-
-        if should_switch_to_nearest(active_target, nearest_tennis):
-            nearest_switch_count += 1
-        else:
-            nearest_switch_count = 0
-
-        if nearest_switch_count >= NEAREST_SWITCH_CONFIRM_FRAMES:
-            active_target = switch_tracked_target_to_nearest(
-                active_target, nearest_tennis
-            )
-            tracked_tennis = active_target.copy()
-            nearest_switch_count = 0
+        if is_live_target(active_target):
+            last_tennis_seen_ms = now_ms
+            update_target_lock_pan(active_target, img)
+            update_servo_tracking(active_target, img)
+        elif target_lost_timeout(last_tennis_seen_ms, now_ms):
+            begin_scan_round()
+            return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
         picker_done = read_picker_feedback()
-        host_unlock_track = host_ctrl_ok and consume_host_track_unlock_event()
-        unlock_pick_track = picker_done or host_unlock_track
+
+        if host_ctrl_ok:
+            unlock_pick_track = host_unlock_track
+        else:
+            unlock_pick_track = picker_done
 
         if unlock_pick_track:
             capture_flash_frames = CAPTURE_HOLD_FRAMES
             capture_cmd = 1
-            reset_pick_scan_fail_rounds()
             begin_scan_round()
-            return None, "SEEK", "SCAN", racket_present, racket_target, command_event
 
-        if is_live_target(active_target):
-            pick_track_lost_count = 0
-            update_target_lock_pan(active_target, img)
-            update_servo_tracking(active_target, img)
-        else:
-            pick_track_lost_count += 1
-            if pick_track_lost_count >= PICK_TRACK_LOST_CONSECUTIVE_TH:
-                reset_pick_scan_fail_rounds()
-                begin_scan_round()
-                return (
-                    None,
-                    "SEEK",
-                    "SCAN",
-                    racket_present,
-                    racket_target,
-                    command_event,
-                )
+        return active_target, "SEEK", "TRACK", racket_present, racket_target, command_event
 
-        return (
-            active_target,
-            "SEEK",
-            "TRACK",
-            racket_present,
-            racket_target,
-            command_event,
-        )
-
-    player_locked = update_player_lock_state(player_live)
     active_target = player_target
-    if player_live:
+    if is_live_target(player_target):
+        player_locked = True
+        last_player_seen_ms = now_ms
+        play_substate = PLAY_TRACK_PLAYER
         update_servo_tracking(player_target, img)
-    elif player_locked:
-        active_target = tracked_player
+    else:
+        player_locked = False
 
-    if player_locked:
-        hit_triggered = note_play_presence(player_live, racket_present)
-        if hit_triggered:
-            capture_flash_frames = CAPTURE_HOLD_FRAMES
-            capture_cmd = 1
-            command_event = (
-                PLAY_HIT_SIGNAL_CMD,
-                "%d|%d|%d" % (PLAY_HIT_SIGNAL_ARG, int(pan_angle), int(tilt_angle)),
-            )
-        return (
-            active_target,
-            "PLAY",
-            "TRACK_P",
-            racket_present,
-            racket_target,
-            command_event,
-        )
+    if not player_locked:
+        racket_seen_prev = False
+        current_racket_id = 0
+        if target_lost_timeout(last_player_seen_ms, now_ms):
+            play_substate = PLAY_SEARCH_PLAYER
+            update_scan_motion(img, None)
+            return None, "PLAY", "SEARCH_P", racket_present, racket_target, command_event
+        play_substate = PLAY_TRACK_PLAYER
+        return active_target, "PLAY", "TRACK_P", racket_present, racket_target, command_event
 
-    reset_play_hit_state()
-    current_racket_id = 0
-    update_play_search_motion(img)
-    return None, "PLAY", "SEARCH_P", racket_present, racket_target, command_event
+    play_substate = PLAY_TRACK_PLAYER
+    racket_seen_prev = racket_present
+    return active_target, "PLAY", "TRACK_P", racket_present, racket_target, command_event
 
 
 def draw_status_panel(img, fps, mode_name, state_name, racket_present):
-    global servo_init_frames_remaining, comm_state
-    global pick_confirm_seen_frames, pick_confirm_total_frames
+    global servo_init_frames_remaining, pick_confirm_start_ms, comm_state
 
     # 显示通信状态：no link / linked / ok
     try:
@@ -3460,34 +2296,27 @@ def draw_status_panel(img, fps, mode_name, state_name, racket_present):
             color=WHITE,
             mono_space=False,
         )
-        if play_hit_latched:
-            img.draw_string(2, 220, "HIT", color=RED, mono_space=False)
-    elif state_name == "CONFIRM":
+    elif state_name == "CONFIRM" and pick_confirm_start_ms > 0:
+        remain_ms = max(0, PICK_CONFIRM_DURATION_MS - time.ticks_diff(time.ticks_ms(), pick_confirm_start_ms))
+        remain_ds = remain_ms // 100
         img.draw_string(
             2,
             200,
-            "confirm:%d/%d hit:%d"
+            "confirm:%d.%ds cand:%d/%d"
             % (
-                pick_confirm_total_frames,
-                PICK_CONFIRM_MAX_FRAMES,
-                pick_confirm_seen_frames,
+                remain_ds // 10,
+                remain_ds % 10,
+                scan_candidate_index + 1,
+                len(scan_ranked_tennis),
             ),
             color=WHITE,
             mono_space=False,
         )
     elif state_name == "TRACK":
         if host_control_enabled():
-            track_text = "track:host fb:%d lost:%d/%d" % (
-                picker_feedback_state,
-                pick_track_lost_count,
-                PICK_TRACK_LOST_CONSECUTIVE_TH,
-            )
+            track_text = "track:host fb:%d" % picker_feedback_state
         else:
-            track_text = "track:fb:%d lost:%d/%d" % (
-                picker_feedback_state,
-                pick_track_lost_count,
-                PICK_TRACK_LOST_CONSECUTIVE_TH,
-            )
+            track_text = "track:fb:%d" % picker_feedback_state
         img.draw_string(
             2,
             200,
@@ -3527,21 +2356,15 @@ def estimate_distance(pixel_diameter, image_width=320):
         return None
 
     distance_mm = (focal_length_mm * tennis_diameter_mm) / projected_mm
-    return (distance_mm / 10.0) * DISTANCE_OUTPUT_SCALE
+    return distance_mm / 10.0
 
 
-def estimate_scaled_distance_cm(pixel_diameter):
+def estimate_corrected_distance_cm(pixel_diameter, radius):
     base_distance_cm = estimate_distance(pixel_diameter)
     if base_distance_cm is None:
         return None
-    return base_distance_cm * DISTANCE_SCALE
-
-
-def estimate_corrected_distance_cm(pixel_diameter):
-    scaled_distance_cm = estimate_scaled_distance_cm(pixel_diameter)
-    if scaled_distance_cm is None:
-        return None
-    return correct_tennis_distance(scaled_distance_cm, pixel_diameter)
+    corrected = base_distance_cm * DISTANCE_SCALE
+    return correct_tennis_distance(corrected, radius)
 
 
 def refine_tennis_target(img, target, allow_hough=None):
@@ -3557,27 +2380,14 @@ def refine_tennis_target(img, target, allow_hough=None):
     if allow_hough is None:
         allow_hough = (frame_index % HOUGH_INTERVAL) == 0
     prev_radius = target.get("refined_radius")
-    close_mode = is_close_range_candidate(target)
-    # 近球始终优先跑霍夫圆，避免用依赖半径的距离估计反过来决定半径策略。
-    diameter, cue_conf, measure_src, measure_cx, measure_cy = estimate_tennis_diameter(
-        img,
-        target["x"],
-        target["y"],
-        target["w"],
-        target["h"],
-        allow_hough=allow_hough,
-        close_mode=close_mode,
+    diameter, cue_conf = estimate_tennis_diameter(
+        img, target["x"], target["y"], target["w"], target["h"], allow_hough=allow_hough
     )
-    raw_radius = fuse_tennis_radius(
-        target["w"], target["h"], diameter, close_mode=close_mode
-    )
-    filtered_diameter, refined_radius = update_trimmed_tennis_measure(
-        target, diameter, raw_radius
-    )
+    raw_radius = fuse_tennis_radius(target["w"], target["h"], diameter)
+    filtered_diameter, refined_radius = update_trimmed_tennis_measure(target, diameter, raw_radius)
     refined_radius = smooth_ball_radius(refined_radius, prev_radius)
 
-    raw_dist_cm = estimate_scaled_distance_cm(diameter)
-    refined_dist_cm = estimate_corrected_distance_cm(filtered_diameter)
+    refined_dist_cm = estimate_corrected_distance_cm(filtered_diameter, refined_radius)
     prev_dist_cm = target.get("refined_dist_cm")
     if (prev_dist_cm is not None) and (refined_dist_cm is not None):
         refined_dist_cm = (prev_dist_cm * 0.7) + (refined_dist_cm * 0.3)
@@ -3589,12 +2399,15 @@ def refine_tennis_target(img, target, allow_hough=None):
     target["refined_diameter"] = filtered_diameter
     target["raw_refined_diameter"] = diameter
     target["raw_refined_radius"] = raw_radius
-    target["raw_dist_cm"] = raw_dist_cm
     target["cue_conf"] = cue_conf
-    target["close_fit"] = 1 if close_mode else 0
-    target["measure_src"] = measure_src
-    target["measure_cx"] = measure_cx
-    target["measure_cy"] = measure_cy
+    if allow_hough and cue_conf >= 2:
+        target["measure_src"] = "mix"
+    elif allow_hough and cue_conf >= 1:
+        target["measure_src"] = "hough"
+    elif cue_conf >= 1:
+        target["measure_src"] = "lab"
+    else:
+        target["measure_src"] = "bbox"
     return target
 
 
@@ -3633,31 +2446,23 @@ def fomo_post_process(model, inputs, outputs):
     x_offset = ((inputs[0].roi[2] - (ow * scale)) / 2) + inputs[0].roi[0]
     y_offset = ((inputs[0].roi[3] - (oh * scale)) / 2) + inputs[0].roi[1]
 
-    threshold_list = [(math.ceil(FOMO_HEATMAP_SCORE_TH * 255), 255)]
+    threshold_list = [(math.ceil(0.20 * 255), 255)]
     results = [[] for _ in range(oc)]
 
-    # FOMO 第 0 通道是 background，主循环不会使用，直接跳过可少做一轮热力图后处理。
-    for i in range(1, oc):
+    for i in range(oc):
         channel = outputs[0][0, :, :, i]
         heatmap = make_grayscale_image(channel, oh, ow)
         blobs = heatmap.find_blobs(
             threshold_list,
             x_stride=1,
             y_stride=1,
-            area_threshold=FOMO_HEATMAP_AREA_TH,
-            pixels_threshold=FOMO_HEATMAP_PIXELS_TH,
-            merge=True,
-            margin=FOMO_HEATMAP_MERGE_MARGIN,
+            area_threshold=1,
+            pixels_threshold=1,
         )
         for blob in blobs:
             rect = blob.rect()
             x, y, w, h = rect
-            score = (
-                heatmap.get_statistics(thresholds=threshold_list, roi=rect).l_mean()
-                / 255.0
-            )
-            if score < FOMO_HEATMAP_SCORE_TH:
-                continue
+            score = heatmap.get_statistics(thresholds=threshold_list, roi=rect).l_mean() / 255.0
             x = int((x * scale) + x_offset)
             y = int((y * scale) + y_offset)
             w = int(w * scale)
@@ -3721,8 +2526,6 @@ def boot():
         except Exception as err:
             halt_with_error("SERVO FAIL", err)
     begin_scan_round()
-    # enter_play_mode()
-    init_grid_overlay()
     show_message("Model OK", "Running...")
 
 
@@ -3739,6 +2542,7 @@ def main_loop():
             process_uart_rx()
             try_send_hello()
             img = sensor.snapshot()
+            draw_grid(img, GRID_ROWS, GRID_COLS, GRID_COLOR)
             predictions = net.predict([img], callback=fomo_post_process)
             tennis_candidates = []
             player_candidates = []
@@ -3757,11 +2561,7 @@ def main_loop():
 
                 label_name = labels[i] if i < len(labels) else ("class_%d" % i)
                 label_l = label_name.lower()
-                is_tennis = (
-                    ("tennis" in label_l)
-                    and ("player" not in label_l)
-                    and ("racket" not in label_l)
-                )
+                is_tennis = ("tennis" in label_l) and ("player" not in label_l) and ("racket" not in label_l)
                 is_player = "player" in label_l
                 is_racket = "racket" in label_l
 
@@ -3778,16 +2578,13 @@ def main_loop():
                     center_x = int(x + w / 2)
                     center_y = int(y + h / 2)
                     row, col = get_grid_position(
-                        center_x,
-                        center_y,
-                        img.width(),
-                        img.height(),
-                        GRID_ROWS,
-                        GRID_COLS,
+                        center_x, center_y, img.width(), img.height(), GRID_ROWS, GRID_COLS
                     )
 
                     if detect_tennis and is_tennis:
-                        radius = max(4, min(40, int(max(w, h) * 0.7)))
+                        if not tennis_center_is_green(img, x, y, w, h):
+                            continue
+                        radius = max(8, min(40, int(max(w, h) * 0.7)))
                         dist_cm = estimate_distance(max(w, h), image_width=img.width())
                         tennis_candidates.append(
                             {
@@ -3803,7 +2600,6 @@ def main_loop():
                                 "row": row,
                                 "col": col,
                                 "kind": "tennis",
-                                "merge_count": 1,
                             }
                         )
 
@@ -3843,18 +2639,6 @@ def main_loop():
                             }
                         )
 
-            if tennis_candidates:
-                tennis_candidates = merge_duplicate_tennis_candidates(
-                    tennis_candidates, img.width(), img.height()
-                )
-                tennis_candidates = [
-                    cand
-                    for cand in tennis_candidates
-                    if tennis_center_is_green(
-                        img, cand["x"], cand["y"], cand["w"], cand["h"]
-                    )
-                ]
-
             refine_all_tennis = (
                 ENABLE_TENNIS_REFINEMENT
                 and REFINE_ALL_TENNIS_IN_PICK_SCAN
@@ -3862,42 +2646,23 @@ def main_loop():
                 and (pick_substate == PICK_SCAN)
             )
             if refine_all_tennis:
-                tennis_candidates = refine_tennis_candidates(
-                    img, tennis_candidates, allow_hough=True
-                )
-                tennis_candidates = dedupe_close_refined_tennis_candidates(
-                    tennis_candidates
-                )
+                tennis_candidates = refine_tennis_candidates(img, tennis_candidates, allow_hough=True)
 
             seek_track_enabled = detect_tennis and (pick_substate == PICK_TRACK)
-            tennis_target = (
-                match_tennis_track(tennis_candidates) if seek_track_enabled else None
-            )
+            tennis_target = match_tennis_track(tennis_candidates) if seek_track_enabled else None
             if detect_tennis and (not refine_all_tennis):
                 tennis_target = refine_tennis_target(img, tennis_target)
-            player_target = (
-                choose_player_target(player_candidates) if detect_play_targets else None
-            )
-            (
-                active_target,
-                mode_name,
-                state_name,
-                racket_present,
-                racket_target,
-                command_event,
-            ) = run_state_machine(
+            player_target = choose_player_target(player_candidates) if detect_play_targets else None
+            active_target, mode_name, state_name, racket_present, racket_target, command_event = run_state_machine(
                 img, tennis_target, tennis_candidates, player_target, racket_candidates
             )
-            draw_grid_overlay(img)
             draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates)
             draw_active_target(img, active_target, mode_name, state_name)
-            draw_racket_target(img, racket_target)
             draw_status_panel(img, clock.fps(), mode_name, state_name, racket_present)
-            send_runtime_packets(mode_name, state_name, active_target)
+            draw_player_countdown(img, mode_name, racket_present)
+            send_runtime_packets(mode_name, active_target)
             if command_event is not None:
-                send_command_packet(
-                    command_event[0], command_event[1], mode_name, state_name
-                )
+                send_command_packet(command_event[0], command_event[1], mode_name, state_name)
             display_frame(img)
         except Exception as err:
             img = sensor.snapshot()
