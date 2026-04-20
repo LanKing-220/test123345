@@ -49,8 +49,8 @@ HOST_CTRL_ACTIONS = (
 
 THRESH_TENNIS = 0.4
 # 人和球拍更容易误触发，阈值调高后会更保守，降低敏感度。
-THRESH_PLAYER = 0.75
-THRESH_RACKET = 0.70
+THRESH_PLAYER = 0.2
+THRESH_RACKET = 0.2
 
 GREEN = (0, 255, 0)
 BLUE = (0, 0, 255)
@@ -87,9 +87,8 @@ grid_overlay = None
 grid_mask = None
 grid_overlay_ready = False
 
-TRACK_MAX_MISS = 8
 TENNIS_TRACK_MAX_MISS = 30
-PLAYER_TRACK_MAX_MISS = 8
+PLAYER_TRACK_MAX_MISS = 20
 TRACK_GATE_MIN = 28
 TRACK_SMOOTH_OLD_NUM = 7
 TRACK_SMOOTH_NEW_NUM = 3
@@ -113,6 +112,7 @@ SERVO_INIT_STEP = 0.35 * SERVO_SPEED_SCALE
 SCAN_PAN_STEP = 0.75 * SERVO_SPEED_SCALE
 TRACK_PAN_MAX_STEP = 1.1 * SERVO_SPEED_SCALE
 TRACK_TILT_MAX_STEP = 1.0 * SERVO_SPEED_SCALE
+PLAY_SEARCH_TILT_STEP = 0.45 * SERVO_SPEED_SCALE
 
 pan_pid = PID(p=0.07, i=0, imax=90)
 tilt_pid = PID(p=0.05, i=0, imax=90)
@@ -131,8 +131,6 @@ PLAY_TRACK_PLAYER = 0
 PLAY_SEARCH_PLAYER = 1
 PLAY_WAIT_SERVE = PLAY_SEARCH_PLAYER
 
-AUTO_SWITCH_TO_PLAY = False
-PLAY_ENTER_CONFIRM_FRAMES = 5
 PICK_CONFIRM_MAX_FRAMES = 20
 PICK_EARLY_LOCK_WINDOW_FRAMES = 10
 PICK_EARLY_LOCK_SEEN_FRAMES = 4
@@ -143,7 +141,14 @@ CAPTURE_HOLD_FRAMES = 8
 NEAREST_SWITCH_MARGIN_CM = 6.0
 NEAREST_SWITCH_CONFIRM_FRAMES = 2
 PICK_TRACK_LOST_CONSECUTIVE_TH = 30
-PLAY_RACKET_CONFIRM_FRAMES = 2
+PLAY_RACKET_CONFIRM_FRAMES = 1
+PLAY_HIT_WINDOW_FRAMES = 5
+PLAY_HIT_MIN_PLAYER_FRAMES = 2
+PLAY_HIT_MIN_RACKET_FRAMES = 2
+PLAY_HIT_SIGNAL_CMD = "HIT"
+PLAY_HIT_SIGNAL_ARG = 1
+PLAYER_LOCK_WINDOW_FRAMES = 20
+PLAYER_LOCK_MIN_HIT_FRAMES = 6
 RACKET_LINK_MARGIN_X_RATIO = 0.60
 RACKET_LINK_MARGIN_Y_RATIO = 0.35
 SCAN_ALIGN_MARGIN = 1.0
@@ -156,18 +161,19 @@ LOCK_ALIGN_MARGIN_Y = 16
 LOCK_PAN_RECORD_MARGIN_X = 26
 LOCK_PAN_RECORD_MARGIN_Y = 22
 
-TENNIS_CENTER_GREEN_L_MIN = 18
-TENNIS_CENTER_GREEN_L_MAX = 96
-TENNIS_CENTER_GREEN_A_MIN = -44
-TENNIS_CENTER_GREEN_A_MAX = 28
-TENNIS_CENTER_GREEN_B_MIN = 6
-TENNIS_CENTER_GREEN_B_MAX = 92
-TENNIS_CENTER_GREEN_RATIO_MIN_PCT = 12
-TENNIS_CENTER_GREEN_STRONG_RATIO_PCT = 20
-TENNIS_CENTER_GREEN_BIAS_MIN = 10
-TENNIS_CENTER_GREEN_CHROMA_MIN = 16
-TENNIS_CENTER_GREEN_DOMINANCE_MARGIN_PCT = 6
-TENNIS_CENTER_GREEN_SMALL_DOMINANCE_MARGIN_PCT = 2
+# 收紧中心颜色过滤，降低浅黄色非网球目标的误判概率。
+TENNIS_CENTER_GREEN_L_MIN = 20
+TENNIS_CENTER_GREEN_L_MAX = 90
+TENNIS_CENTER_GREEN_A_MIN = -38
+TENNIS_CENTER_GREEN_A_MAX = 18
+TENNIS_CENTER_GREEN_B_MIN = 14
+TENNIS_CENTER_GREEN_B_MAX = 84
+TENNIS_CENTER_GREEN_RATIO_MIN_PCT = 16
+TENNIS_CENTER_GREEN_STRONG_RATIO_PCT = 24
+TENNIS_CENTER_GREEN_BIAS_MIN = 16
+TENNIS_CENTER_GREEN_CHROMA_MIN = 20
+TENNIS_CENTER_GREEN_DOMINANCE_MARGIN_PCT = 10
+TENNIS_CENTER_GREEN_SMALL_DOMINANCE_MARGIN_PCT = 4
 TENNIS_CENTER_GREEN_ROI_MIN = 6
 TENNIS_CENTER_GREEN_ROI_MAX = 18
 TENNIS_CENTER_WHITE_L_MIN = 54
@@ -180,13 +186,21 @@ TENNIS_CENTER_WHITE_RATIO_MIN_PCT = 42
 TENNIS_CENTER_WHITE_STRONG_RATIO_PCT = 62
 TENNIS_CENTER_WHITE_DOMINANCE_MARGIN_PCT = 18
 TENNIS_CENTER_WHITE_GREEN_BIAS_MAX = 16
+TENNIS_CENTER_PALE_YELLOW_L_MIN = 58
+TENNIS_CENTER_PALE_YELLOW_A_MIN = -6
+TENNIS_CENTER_PALE_YELLOW_A_MAX = 18
+TENNIS_CENTER_PALE_YELLOW_B_MIN = 18
+TENNIS_CENTER_PALE_YELLOW_B_MAX = 44
+TENNIS_CENTER_PALE_YELLOW_CHROMA_MAX = 42
+TENNIS_CENTER_PALE_YELLOW_GREEN_RATIO_MAX_PCT = 26
+TENNIS_CENTER_PALE_YELLOW_BIAS_MAX = 20
+PLAY_ENTER_TILT_LIFT_DEG = 30.0
 
 PICKER_FEEDBACK_PIN = None
 PICKER_FEEDBACK_ACTIVE_LEVEL = 1
 
 mode = MODE_PICK
 pick_substate = PICK_SCAN
-play_substate = PLAY_TRACK_PLAYER
 
 capture_cmd = 0
 capture_flash_frames = 0
@@ -196,17 +210,17 @@ balls_picked = 0
 target_balls = 5
 scan_direction = 1
 scan_speed = SCAN_PAN_STEP
-scan_lock_count = 0
 nearest_switch_count = 0
 play_ready_frames = 0
-racket_seen_prev = False
+play_presence_window = []
+play_hit_latched = False
+player_lock_window = []
 best_scan_tennis = None
 scan_ranked_tennis = []
 scan_candidate_index = 0
 servo_init_frames_remaining = 0
 scan_seek_left = True
 scan_tilt_reset_pending = False
-pick_confirm_start_ms = 0
 pick_confirm_total_frames = 0
 pick_confirm_seen_frames = 0
 pick_scan_fail_rounds = 0
@@ -300,7 +314,7 @@ LOCAL_NEAREST_GATE_RADIUS_SCALE = 4
 # 若需固定色彩可把 CAMERA_AUTO_WHITEBAL 设为 False，并启用手动 RGB 增益。
 CAMERA_AUTO_WHITEBAL = True
 CAMERA_MANUAL_WHITEBAL = False
-CAMERA_MANUAL_RGB_GAIN_DB = (0.3, 0.0, 0.5)
+CAMERA_MANUAL_RGB_GAIN_DB = (0.3, 0.0, 0.8)
 CAMERA_MANUAL_GAIN_DB = 1.0
 CAMERA_MANUAL_EXPOSURE_US = 160000
 
@@ -919,10 +933,20 @@ def tennis_center_is_green(img, x, y, w, h):
     pale_bright = (l_mean >= (TENNIS_CENTER_WHITE_L_MIN + 8)) and (
         chroma <= (TENNIS_CENTER_WHITE_CHROMA_MAX + 8)
     )
+    pale_yellow = (
+        (l_mean >= TENNIS_CENTER_PALE_YELLOW_L_MIN)
+        and (TENNIS_CENTER_PALE_YELLOW_A_MIN <= a_mean <= TENNIS_CENTER_PALE_YELLOW_A_MAX)
+        and (TENNIS_CENTER_PALE_YELLOW_B_MIN <= b_mean <= TENNIS_CENTER_PALE_YELLOW_B_MAX)
+        and (chroma <= TENNIS_CENTER_PALE_YELLOW_CHROMA_MAX)
+        and (green_ratio_pct <= TENNIS_CENTER_PALE_YELLOW_GREEN_RATIO_MAX_PCT)
+        and (green_bias <= TENNIS_CENTER_PALE_YELLOW_BIAS_MAX)
+    )
     white_dominant = (white_ratio_pct >= white_ratio_min_pct) and (
         white_ratio_pct >= (green_ratio_pct + white_dom_margin_pct)
     )
     if pale_bright and (green_ratio_pct < strong_green_min_pct):
+        return False
+    if pale_yellow:
         return False
     if (mean_white and (white_ratio_pct >= white_ratio_min_pct)) or white_dominant:
         return False
@@ -931,6 +955,42 @@ def tennis_center_is_green(img, x, y, w, h):
     if not green_dominant:
         return False
     return (mean_green and (green_ratio_pct >= green_ratio_min_pct)) or strong_green
+
+
+def lift_tilt_for_play_mode():
+    if not ENABLE_SERVOS:
+        return
+    if p9 is None:
+        return
+
+    start_tilt_pwm()
+
+
+def play_search_tilt_target():
+    return clamp(
+        TILT_INIT_ANGLE - PLAY_ENTER_TILT_LIFT_DEG,
+        tilt_angle_limit[0],
+        tilt_angle_limit[1],
+    )
+
+
+def update_play_search_motion(img):
+    global pan_angle, scan_direction
+
+    if not ENABLE_SERVOS:
+        return
+    if p1 is None:
+        return
+
+    apply_pan_delta(scan_direction * scan_speed, SCAN_PAN_STEP)
+    if pan_angle >= pan_angle_limit[1]:
+        pan_angle = pan_angle_limit[1]
+        scan_direction = -1
+    elif pan_angle <= pan_angle_limit[0]:
+        pan_angle = pan_angle_limit[0]
+        scan_direction = 1
+
+    move_tilt_toward(play_search_tilt_target(), PLAY_SEARCH_TILT_STEP)
 
 
 def clamp_diameter_by_bbox(diameter, bbox_d, close_mode=False):
@@ -1972,9 +2032,8 @@ def is_live_target(target):
 
 
 def reset_pick_confirm_window():
-    global pick_confirm_start_ms, pick_confirm_total_frames, pick_confirm_seen_frames
+    global pick_confirm_total_frames, pick_confirm_seen_frames
 
-    pick_confirm_start_ms = 0
     pick_confirm_total_frames = 0
     pick_confirm_seen_frames = 0
 
@@ -2001,6 +2060,82 @@ def reset_pick_scan_fail_rounds():
     pick_scan_fail_rounds = 0
 
 
+def reset_play_hit_state():
+    global play_presence_window, play_hit_latched, play_ready_frames
+
+    play_presence_window = []
+    play_hit_latched = False
+    play_ready_frames = 0
+
+
+def reset_play_lock_state():
+    global player_lock_window, player_locked
+
+    player_lock_window = []
+    player_locked = False
+
+
+def update_player_lock_state(player_present):
+    global player_lock_window, player_locked
+
+    player_lock_window.append(1 if player_present else 0)
+    if len(player_lock_window) > PLAYER_LOCK_WINDOW_FRAMES:
+        player_lock_window.pop(0)
+
+    if player_present:
+        player_locked = True
+        return True
+
+    if not player_locked:
+        return False
+
+    if len(player_lock_window) < PLAYER_LOCK_WINDOW_FRAMES:
+        return True
+
+    player_hits = 0
+    for hit in player_lock_window:
+        player_hits += hit
+
+    if player_hits < PLAYER_LOCK_MIN_HIT_FRAMES:
+        player_locked = False
+        return False
+    return True
+
+
+def note_play_presence(player_present, racket_present):
+    global play_presence_window, play_hit_latched, play_ready_frames
+
+    flags = 0
+    if player_present:
+        flags |= 1
+    if racket_present:
+        flags |= 2
+
+    play_presence_window.append(flags)
+    if len(play_presence_window) > PLAY_HIT_WINDOW_FRAMES:
+        play_presence_window.pop(0)
+
+    player_hits = 0
+    racket_hits = 0
+    for state in play_presence_window:
+        if state & 1:
+            player_hits += 1
+        if state & 2:
+            racket_hits += 1
+
+    play_ready_frames = min(player_hits, racket_hits)
+    ready = (
+        player_hits >= PLAY_HIT_MIN_PLAYER_FRAMES
+        and racket_hits >= PLAY_HIT_MIN_RACKET_FRAMES
+    )
+    if ready and (not play_hit_latched):
+        play_hit_latched = True
+        return True
+    if not ready:
+        play_hit_latched = False
+    return False
+
+
 def handle_pick_scan_round_failed(racket_present, racket_target, command_event):
     global pick_scan_fail_rounds
 
@@ -2021,7 +2156,7 @@ def clear_pick_unlock_events():
 
 
 def is_racket_linked_to_player(player_target, racket_target):
-    if (not is_live_target(player_target)) or racket_target is None:
+    if player_target is None or racket_target is None:
         return False
 
     required_keys = ("x", "y", "w", "h", "cx", "cy")
@@ -2047,12 +2182,10 @@ def is_racket_linked_to_player(player_target, racket_target):
 
     if rcx < left or rcx > right or rcy < top or rcy > bottom:
         return False
-
     if rh > int(ph * 12 / 10):
         return False
     if rw > int(pw * 9 / 10):
         return False
-
     return True
 
 
@@ -2060,7 +2193,7 @@ def choose_racket_target(candidates, player_target=None):
     if not candidates:
         return None
 
-    if is_live_target(player_target):
+    if player_target is not None:
         linked_candidates = []
         for cand in candidates:
             if is_racket_linked_to_player(player_target, cand):
@@ -2076,7 +2209,7 @@ def choose_racket_target(candidates, player_target=None):
         center_dy = cand["cy"] - 120
         center_d2 = (center_dx * center_dx) + (center_dy * center_dy)
         area = cand["w"] * cand["h"]
-        if is_live_target(player_target):
+        if player_target is not None:
             player_dx = abs(cand["cx"] - player_target["cx"])
             player_dy = abs(cand["cy"] - player_target["cy"])
             player_d = player_dx + player_dy
@@ -2272,6 +2405,8 @@ def draw_active_target(img, target, mode_name, state_name):
     cy = clamp(target["cy"], 0, img.height() - 1)
     radius = clamp(target["radius"], 4, 55)
     kind = target.get("kind", "target").lower()
+    draw_cx = cx
+    draw_cy = cy
 
     if kind == "tennis":
         target_color = GREEN
@@ -2297,21 +2432,26 @@ def draw_active_target(img, target, mode_name, state_name):
             img.draw_string(2, 110, "dist:%.1fcm" % target["dist_cm"], color=WHITE, mono_space=False)
         return
 
+    if (kind == "player") and target_missing and (mode_name == "PLAY"):
+        draw_cx = img.width() // 2
+        draw_cy = img.height() // 2
+
     if (kind == "racket") and all(k in target for k in ("x", "y", "w", "h")):
         img.draw_rectangle((target["x"], target["y"], target["w"], target["h"]), color=target_color, thickness=2)
     else:
-        img.draw_circle((cx, cy, radius + 3), color=target_color)
-    img.draw_cross(cx, cy, color=WHITE, size=10, thickness=2)
-    img.draw_line((img.width() // 2, img.height() // 2, cx, cy), color=target_color)
+        img.draw_circle((draw_cx, draw_cy, radius + 3), color=target_color)
+    img.draw_cross(draw_cx, draw_cy, color=WHITE, size=10, thickness=2)
+    if (draw_cx != (img.width() // 2)) or (draw_cy != (img.height() // 2)):
+        img.draw_line((img.width() // 2, img.height() // 2, draw_cx, draw_cy), color=target_color)
 
     kind_label = target.get("kind", "target").upper()
     status_text = "%s HOLD" % kind_label[:6] if target_missing else "%s LOCK" % kind_label[:6]
-    status_color = YELLOW if target_missing else target_color
+    status_color = target_color if ((kind == "player") and target_missing) else (YELLOW if target_missing else target_color)
     img.draw_string(2, 74, status_text, color=status_color, mono_space=False)
     img.draw_string(
         2,
         92,
-        "dx:%d dy:%d" % (cx - (img.width() // 2), cy - (img.height() // 2)),
+        "dx:%d dy:%d" % (draw_cx - (img.width() // 2), draw_cy - (img.height() // 2)),
         color=WHITE,
         mono_space=False,
     )
@@ -2321,7 +2461,7 @@ def draw_active_target(img, target, mode_name, state_name):
         img.draw_string(
             2,
             110,
-            "grid:(%d,%d)" % (target["row"], target["col"]),
+            "grid:(%d,%d)" % (int(target.get("row", -1)), int(target.get("col", -1))),
             color=WHITE,
             mono_space=False,
         )
@@ -2329,6 +2469,25 @@ def draw_active_target(img, target, mode_name, state_name):
         img.draw_string(2, 128, "miss:%d" % int(target.get("miss", 0)), color=YELLOW, mono_space=False)
     elif "measure_src" in target:
         img.draw_string(2, 128, "measure:%s" % target["measure_src"], color=WHITE, mono_space=False)
+
+
+def draw_racket_target(img, target):
+    if target is None:
+        return
+    if not all(k in target for k in ("x", "y", "w", "h", "cx", "cy")):
+        return
+
+    x = int(clamp(target["x"], 0, img.width() - 1))
+    y = int(clamp(target["y"], 0, img.height() - 1))
+    w = int(clamp(target["w"], 1, img.width() - x))
+    h = int(clamp(target["h"], 1, img.height() - y))
+    cx = int(clamp(target["cx"], 0, img.width() - 1))
+    cy = int(clamp(target["cy"], 0, img.height() - 1))
+    label_y = y - 14 if y >= 14 else y + h + 2
+
+    img.draw_rectangle((x, y, w, h), color=RED, thickness=2)
+    img.draw_cross(cx, cy, color=RED, size=8, thickness=2)
+    img.draw_string(x, label_y, "RACKET", color=RED, mono_space=False)
 
 
 def draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates):
@@ -2548,16 +2707,15 @@ def remember_scan_target(target, img=None, observed_pan=None, observed_tilt=None
 
 
 def begin_scan_round():
-    global pick_substate, scan_seek_left, scan_direction, scan_lock_count
+    global pick_substate, scan_seek_left, scan_direction
     global nearest_switch_count, best_scan_tennis, tracked_tennis
-    global scan_ranked_tennis, scan_candidate_index, pick_confirm_start_ms
+    global scan_ranked_tennis, scan_candidate_index
     global scan_tilt_reset_pending, pick_track_lost_count
 
     pick_substate = PICK_SCAN
     scan_seek_left = True
     scan_tilt_reset_pending = True
     scan_direction = 1
-    scan_lock_count = 0
     nearest_switch_count = 0
     best_scan_tennis = None
     scan_ranked_tennis = []
@@ -2788,25 +2946,23 @@ def update_scan_motion(img, nearest_tennis):
 
 
 def enter_pick_mode():
-    global mode, pick_substate, play_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, scan_lock_count, nearest_switch_count, play_ready_frames
-    global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player
+    global mode, pick_substate, capture_cmd, capture_flash_frames
+    global player_locked, balls_served, nearest_switch_count, play_ready_frames
+    global play_presence_window, play_hit_latched
+    global best_scan_tennis, tracked_tennis, tracked_player
     global scan_ranked_tennis, scan_candidate_index
-    global scan_seek_left, scan_direction, pick_confirm_start_ms, current_racket_id
+    global scan_seek_left, scan_direction, current_racket_id
     global scan_tilt_reset_pending
     global pick_track_lost_count, pick_scan_fail_rounds
 
     mode = MODE_PICK
     pick_substate = PICK_SCAN
-    play_substate = PLAY_TRACK_PLAYER
     capture_cmd = 0
     capture_flash_frames = 0
     player_locked = False
     balls_served = 0
-    scan_lock_count = 0
     nearest_switch_count = 0
     play_ready_frames = 0
-    racket_seen_prev = False
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
@@ -2816,57 +2972,57 @@ def enter_pick_mode():
     scan_tilt_reset_pending = True
     scan_direction = 1
     reset_pick_confirm_window()
+    reset_play_lock_state()
+    reset_play_hit_state()
     current_racket_id = 0
     pick_track_lost_count = 0
     pick_scan_fail_rounds = 0
 
 
 def enter_play_mode():
-    global mode, pick_substate, play_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, scan_lock_count, nearest_switch_count, play_ready_frames
-    global racket_seen_prev, best_scan_tennis, tracked_tennis, tracked_player, current_racket_id
+    global mode, pick_substate, capture_cmd, capture_flash_frames
+    global player_locked, balls_served, nearest_switch_count, play_ready_frames
+    global play_presence_window, play_hit_latched
+    global best_scan_tennis, tracked_tennis, tracked_player, current_racket_id
     global scan_ranked_tennis, scan_candidate_index
-    global scan_direction, pick_confirm_start_ms, pick_track_lost_count, pick_scan_fail_rounds
+    global scan_direction, pick_track_lost_count, pick_scan_fail_rounds
 
     mode = MODE_PLAY
     pick_substate = PICK_SCAN
-    play_substate = PLAY_TRACK_PLAYER
     capture_cmd = 0
     capture_flash_frames = 0
     player_locked = False
     balls_served = 0
-    scan_lock_count = 0
     nearest_switch_count = 0
     play_ready_frames = 0
-    racket_seen_prev = False
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
     scan_direction = 1
     reset_pick_confirm_window()
+    reset_play_lock_state()
+    reset_play_hit_state()
     tracked_tennis = None
     tracked_player = None
     current_racket_id = 0
     pick_track_lost_count = 0
     pick_scan_fail_rounds = 0
+    lift_tilt_for_play_mode()
 
 
 def run_state_machine(img, tennis_target, tennis_candidates, player_target, racket_candidates):
-    global mode, pick_substate, play_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, play_ready_frames, racket_seen_prev
-    global scan_lock_count, nearest_switch_count, best_scan_tennis, tracked_tennis
+    global mode, pick_substate, capture_cmd, capture_flash_frames
+    global player_locked, balls_served, play_ready_frames
+    global nearest_switch_count, best_scan_tennis, tracked_tennis
     global scan_ranked_tennis, scan_candidate_index
-    global pick_confirm_start_ms, current_racket_id
+    global current_racket_id
     global pick_track_lost_count
 
     command_event = None
+    player_live = is_live_target(player_target)
     racket_target = choose_racket_target(racket_candidates, player_target)
     racket_visible = racket_target is not None
-    if is_live_target(player_target) and racket_visible:
-        play_ready_frames += 1
-    else:
-        play_ready_frames = 0
-    racket_present = play_ready_frames >= PLAY_RACKET_CONFIRM_FRAMES
+    racket_present = racket_visible
     if racket_present:
         if current_racket_id <= 0:
             current_racket_id = allocate_target_id()
@@ -2876,7 +3032,6 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
         racket_target = None
     nearest_tennis = choose_nearest_tennis(tennis_candidates)
     active_target = tennis_target
-    now_ms = time.ticks_ms()
     host_ctrl_ok = host_control_enabled()
     requested_mode = -1
 
@@ -2935,9 +3090,6 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
             confirmed_target = choose_local_nearest_tennis(best_scan_tennis, tennis_candidates)
             if confirmed_target is None:
                 confirmed_target = choose_confirmed_scan_target(best_scan_tennis, tennis_candidates)
-
-            if pick_confirm_start_ms <= 0:
-                pick_confirm_start_ms = now_ms
 
             if confirmed_target is not None:
                 note_pick_confirm_frame(True)
@@ -3014,31 +3166,29 @@ def run_state_machine(img, tennis_target, tennis_candidates, player_target, rack
 
         return active_target, "SEEK", "TRACK", racket_present, racket_target, command_event
 
+    player_locked = update_player_lock_state(player_live)
     active_target = player_target
-    if is_live_target(player_target):
-        player_locked = True
-        play_substate = PLAY_TRACK_PLAYER
+    if player_live:
         update_servo_tracking(player_target, img)
-    else:
-        player_locked = False
+    elif player_locked:
+        active_target = tracked_player
 
-    if not player_locked:
-        racket_seen_prev = False
-        current_racket_id = 0
-        if active_target is None or active_target.get("miss", 0) >= PLAYER_TRACK_MAX_MISS:
-            play_substate = PLAY_SEARCH_PLAYER
-            update_scan_motion(img, None)
-            return None, "PLAY", "SEARCH_P", racket_present, racket_target, command_event
-        play_substate = PLAY_TRACK_PLAYER
+    if player_locked:
+        hit_triggered = note_play_presence(player_live, racket_present)
+        if hit_triggered:
+            capture_flash_frames = CAPTURE_HOLD_FRAMES
+            capture_cmd = 1
+            command_event = (PLAY_HIT_SIGNAL_CMD, PLAY_HIT_SIGNAL_ARG)
         return active_target, "PLAY", "TRACK_P", racket_present, racket_target, command_event
 
-    play_substate = PLAY_TRACK_PLAYER
-    racket_seen_prev = racket_present
-    return active_target, "PLAY", "TRACK_P", racket_present, racket_target, command_event
+    reset_play_hit_state()
+    current_racket_id = 0
+    update_play_search_motion(img)
+    return None, "PLAY", "SEARCH_P", racket_present, racket_target, command_event
 
 
 def draw_status_panel(img, fps, mode_name, state_name, racket_present):
-    global servo_init_frames_remaining, pick_confirm_start_ms, comm_state
+    global servo_init_frames_remaining, comm_state
     global pick_confirm_seen_frames, pick_confirm_total_frames
 
     # 显示通信状态：no link / linked / ok
@@ -3090,7 +3240,7 @@ def draw_status_panel(img, fps, mode_name, state_name, racket_present):
             color=WHITE,
             mono_space=False,
         )
-    elif state_name == "CONFIRM" and pick_confirm_start_ms > 0:
+    elif state_name == "CONFIRM":
         img.draw_string(
             2,
             200,
@@ -3342,6 +3492,7 @@ def boot():
         except Exception as err:
             halt_with_error("SERVO FAIL", err)
     begin_scan_round()
+    # enter_play_mode()
     init_grid_overlay()
     show_message("Model OK", "Running...")
 
@@ -3485,6 +3636,7 @@ def main_loop():
             draw_grid_overlay(img)
             draw_seek_tennis_candidates(img, mode_name, state_name, tennis_candidates)
             draw_active_target(img, active_target, mode_name, state_name)
+            draw_racket_target(img, racket_target)
             draw_status_panel(img, clock.fps(), mode_name, state_name, racket_present)
             send_runtime_packets(mode_name, state_name, active_target)
             if command_event is not None:
