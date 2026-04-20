@@ -28,7 +28,7 @@ UART_RX_BUFFER_MAX = 96
 UART_SEND_INTERVAL_FRAMES = 5
 ENABLE_GRID_OVERLAY = True
 
-# 通信状态：0=no link, 1=linked(收到HI), 2=ok(收到OK)
+# 通信状态：0=no link, 1=linked(收到HI), 2=ok(已向下位机发送OK)
 COMM_NO_LINK = 0
 COMM_LINKED = 1
 COMM_OK = 2
@@ -37,14 +37,14 @@ last_hello_ms = 0
 HELLO_INTERVAL_MS = 5000
 
 # 主机控制命令：采用 REQ/CONFIRM 二次确认，避免串口噪声误触发。
-# 仅在链路 COMM_OK 且当前状态允许时才会真正执行。
+# 进入 PLAY 由 OpenMV 在连续 3 轮扫描锁球失败后自主切换；
+# 下位机仅负责在 PLAY 结束后请求切回 SEEK，另可在 SEEK/TRACK 时请求 UNLOCK_TRACK。
 HOST_CTRL_CONFIRM_TIMEOUT_MS = 3000
 HOST_CTRL_ACTION_UNLOCK_TRACK = "UNLOCK_TRACK"
 HOST_CTRL_ACTION_MODE_PICK = "MODE_PICK"
-HOST_CTRL_ACTION_MODE_PLAY = "MODE_PLAY"
 HOST_CTRL_ACTIONS = (
+    HOST_CTRL_ACTION_UNLOCK_TRACK,
     HOST_CTRL_ACTION_MODE_PICK,
-    HOST_CTRL_ACTION_MODE_PLAY,
 )
 
 THRESH_TENNIS = 0.4
@@ -57,16 +57,6 @@ BLUE = (0, 0, 255)
 RED = (255, 0, 0)
 YELLOW = (255, 255, 0)
 WHITE = (255, 255, 255)
-
-colors = [
-    (255, 0, 0),
-    (0, 255, 0),
-    (255, 255, 0),
-    (0, 0, 255),
-    (255, 0, 255),
-    (0, 255, 255),
-    (255, 255, 255),
-]
 
 lcd = None
 uart = None
@@ -127,28 +117,22 @@ PICK_SCAN = 0
 PICK_RETURN = 1
 PICK_CONFIRM = 2
 PICK_TRACK = 3
-PLAY_TRACK_PLAYER = 0
-PLAY_SEARCH_PLAYER = 1
-PLAY_WAIT_SERVE = PLAY_SEARCH_PLAYER
 
 PICK_CONFIRM_MAX_FRAMES = 20
 PICK_EARLY_LOCK_WINDOW_FRAMES = 10
 PICK_EARLY_LOCK_SEEN_FRAMES = 4
 PICK_FINAL_LOCK_MIN_SEEN_FRAMES = 7
 PICK_SCAN_FAIL_ROUNDS_TO_PLAY = 3
-CAPTURE_DISTANCE_CM = 10.0
 CAPTURE_HOLD_FRAMES = 8
 NEAREST_SWITCH_MARGIN_CM = 6.0
 NEAREST_SWITCH_CONFIRM_FRAMES = 2
 PICK_TRACK_LOST_CONSECUTIVE_TH = 30
-PLAY_RACKET_CONFIRM_FRAMES = 1
 PLAY_HIT_WINDOW_FRAMES = 5
 PLAY_HIT_MIN_PLAYER_FRAMES = 2
 PLAY_HIT_MIN_RACKET_FRAMES = 2
 PLAY_HIT_SIGNAL_CMD = "HIT"
 PLAY_HIT_SIGNAL_ARG = 1
-PLAYER_LOCK_WINDOW_FRAMES = 20
-PLAYER_LOCK_MIN_HIT_FRAMES = 6
+PLAYER_UNLOCK_CONSECUTIVE_MISS_FRAMES = 20
 RACKET_LINK_MARGIN_X_RATIO = 0.60
 RACKET_LINK_MARGIN_Y_RATIO = 0.35
 SCAN_ALIGN_MARGIN = 1.0
@@ -206,15 +190,15 @@ capture_cmd = 0
 capture_flash_frames = 0
 player_locked = False
 balls_served = 0
-balls_picked = 0
 target_balls = 5
 scan_direction = 1
 scan_speed = SCAN_PAN_STEP
 nearest_switch_count = 0
-play_ready_frames = 0
 play_presence_window = []
+play_player_hits = 0
+play_racket_hits = 0
 play_hit_latched = False
-player_lock_window = []
+player_lock_miss_frames = 0
 best_scan_tennis = None
 scan_ranked_tennis = []
 scan_candidate_index = 0
@@ -230,12 +214,13 @@ picker_feedback_state = 0
 picker_uart_done_pending = 0
 next_target_id = 1
 current_racket_id = 0
+play_runtime_placeholder_pending = False
 uart_rx_buffer = ""
 host_ctrl_pending_action = ""
 host_ctrl_pending_token = ""
 host_ctrl_pending_ms = 0
 host_track_unlock_pending = 0
-host_mode_switch_pending = -1
+host_pick_mode_pending = 0
 
 ENABLE_TENNIS_REFINEMENT = True
 HOUGH_INTERVAL = 3
@@ -580,10 +565,10 @@ def host_action_supported(action):
 
 
 def host_action_allowed(action):
+    if action == HOST_CTRL_ACTION_UNLOCK_TRACK:
+        return (mode == MODE_PICK) and (pick_substate == PICK_TRACK)
     if action == HOST_CTRL_ACTION_MODE_PICK:
         return mode == MODE_PLAY
-    if action == HOST_CTRL_ACTION_MODE_PLAY:
-        return mode == MODE_PICK
     return False
 
 
@@ -604,17 +589,18 @@ def consume_host_track_unlock_event():
     return True
 
 
-def consume_host_mode_switch_event():
-    global host_mode_switch_pending
+def consume_host_pick_mode_event():
+    global host_pick_mode_pending
 
-    mode_to_switch = host_mode_switch_pending
-    host_mode_switch_pending = -1
-    return mode_to_switch
+    if host_pick_mode_pending <= 0:
+        return False
+    host_pick_mode_pending = 0
+    return True
 
 
 def parse_host_ctrl_message(text):
     global host_ctrl_pending_action, host_ctrl_pending_token, host_ctrl_pending_ms
-    global host_track_unlock_pending, host_mode_switch_pending
+    global host_track_unlock_pending, host_pick_mode_pending
 
     # 协议：CTRL,ACTION,REQ|CONFIRM,TOKEN
     parts = [p.strip() for p in text.split(",")]
@@ -668,9 +654,7 @@ def parse_host_ctrl_message(text):
         if action == HOST_CTRL_ACTION_UNLOCK_TRACK:
             host_track_unlock_pending += 1
         elif action == HOST_CTRL_ACTION_MODE_PICK:
-            host_mode_switch_pending = MODE_PICK
-        elif action == HOST_CTRL_ACTION_MODE_PLAY:
-            host_mode_switch_pending = MODE_PLAY
+            host_pick_mode_pending = 1
         uart_write_line("ACK,%s,CONFIRM,%s" % (action, token))
         clear_host_ctrl_pending()
         return True
@@ -682,7 +666,7 @@ def parse_host_ctrl_message(text):
 
 
 def handle_uart_line(line):
-    global balls_served, balls_picked, picker_uart_done_pending
+    global balls_served, picker_uart_done_pending
     global comm_state
 
     if not line:
@@ -698,15 +682,11 @@ def handle_uart_line(line):
     upper = text.upper()
     count = parse_uart_event_count(upper)
 
-    # 处理握手与链路状态：HI 表示链路建立，OK 表示主机确认
+    # 握手协议：OpenMV 发送 hello，下位机回复 HI，随后 OpenMV 回 OK。
     if upper == "HI" or upper.startswith("HI "):
         try:
             comm_state = COMM_LINKED
-        except Exception:
-            pass
-        return
-    if upper == "OK" or upper.startswith("OK "):
-        try:
+            uart_write_line("OK")
             comm_state = COMM_OK
         except Exception:
             pass
@@ -722,7 +702,6 @@ def handle_uart_line(line):
         or upper.startswith("PICKUP")
         or upper.startswith("COLLECT")
     ):
-        balls_picked += count
         picker_uart_done_pending += count
 
 
@@ -2143,49 +2122,46 @@ def reset_pick_scan_fail_rounds():
 
 
 def reset_play_hit_state():
-    global play_presence_window, play_hit_latched, play_ready_frames
+    global play_presence_window, play_player_hits, play_racket_hits
+    global play_hit_latched
 
     play_presence_window = []
+    play_player_hits = 0
+    play_racket_hits = 0
     play_hit_latched = False
-    play_ready_frames = 0
 
 
 def reset_play_lock_state():
-    global player_lock_window, player_locked
+    global player_lock_miss_frames, player_locked
 
-    player_lock_window = []
+    player_lock_miss_frames = 0
     player_locked = False
 
 
 def update_player_lock_state(player_present):
-    global player_lock_window, player_locked
-
-    player_lock_window.append(1 if player_present else 0)
-    if len(player_lock_window) > PLAYER_LOCK_WINDOW_FRAMES:
-        player_lock_window.pop(0)
+    global player_lock_miss_frames, player_locked
 
     if player_present:
+        player_lock_miss_frames = 0
         player_locked = True
         return True
 
     if not player_locked:
+        player_lock_miss_frames = 0
         return False
 
-    if len(player_lock_window) < PLAYER_LOCK_WINDOW_FRAMES:
-        return True
-
-    player_hits = 0
-    for hit in player_lock_window:
-        player_hits += hit
-
-    if player_hits < PLAYER_LOCK_MIN_HIT_FRAMES:
+    # 发现人后立刻锁定；只有连续 20 帧完全未见到人时才解锁。
+    player_lock_miss_frames += 1
+    if player_lock_miss_frames >= PLAYER_UNLOCK_CONSECUTIVE_MISS_FRAMES:
+        player_lock_miss_frames = PLAYER_UNLOCK_CONSECUTIVE_MISS_FRAMES
         player_locked = False
         return False
     return True
 
 
 def note_play_presence(player_present, racket_present):
-    global play_presence_window, play_hit_latched, play_ready_frames
+    global play_presence_window, play_player_hits, play_racket_hits
+    global play_hit_latched
 
     flags = 0
     if player_present:
@@ -2194,21 +2170,20 @@ def note_play_presence(player_present, racket_present):
         flags |= 2
 
     play_presence_window.append(flags)
+    if flags & 1:
+        play_player_hits += 1
+    if flags & 2:
+        play_racket_hits += 1
     if len(play_presence_window) > PLAY_HIT_WINDOW_FRAMES:
-        play_presence_window.pop(0)
+        expired = play_presence_window.pop(0)
+        if expired & 1:
+            play_player_hits -= 1
+        if expired & 2:
+            play_racket_hits -= 1
 
-    player_hits = 0
-    racket_hits = 0
-    for state in play_presence_window:
-        if state & 1:
-            player_hits += 1
-        if state & 2:
-            racket_hits += 1
-
-    play_ready_frames = min(player_hits, racket_hits)
     ready = (
-        player_hits >= PLAY_HIT_MIN_PLAYER_FRAMES
-        and racket_hits >= PLAY_HIT_MIN_RACKET_FRAMES
+        play_player_hits >= PLAY_HIT_MIN_PLAYER_FRAMES
+        and play_racket_hits >= PLAY_HIT_MIN_RACKET_FRAMES
     )
     if ready and (not play_hit_latched):
         play_hit_latched = True
@@ -2224,7 +2199,7 @@ def handle_pick_scan_round_failed(racket_present, racket_target, command_event):
     pick_scan_fail_rounds += 1
     if pick_scan_fail_rounds >= PICK_SCAN_FAIL_ROUNDS_TO_PLAY:
         enter_play_mode()
-        return None, "PLAY", "TRACK_P", False, None, command_event
+        return None, "PLAY", "SEARCH_P", False, None, command_event
 
     begin_scan_round()
     return None, "SEEK", "SCAN", racket_present, racket_target, command_event
@@ -2308,19 +2283,38 @@ def uart_write_line(line):
 
 
 def send_runtime_packets(mode_name, state_name, target):
+    global play_runtime_placeholder_pending
+
     if uart is None:
         return
-    if mode_name != "SEEK" or state_name != "TRACK":
-        return
-    if (frame_index % UART_SEND_INTERVAL_FRAMES) != 0:
-        return
-    if (not is_live_target(target)) or target.get("kind") != "tennis":
+
+    if mode_name == "PLAY":
+        if play_runtime_placeholder_pending:
+            play_runtime_placeholder_pending = False
+            uart_write_line("PLAY,-1,-1,0.0")
+            return
+
+        if (frame_index % UART_SEND_INTERVAL_FRAMES) != 0:
+            return
+
+        if state_name == "TRACK_P" and is_live_target(target) and target.get("kind") == "player":
+            uart_write_line("PLAY,%d,%d,0.0" % (int(pan_angle), int(tilt_angle)))
+        else:
+            uart_write_line("PLAY,-1,-1,0.0")
         return
 
-    row = int(target.get("row", -1))
-    col = int(target.get("col", -1))
-    distance_cm = target_distance_cm(target)
-    uart_write_line("%s,%d,%d,%.1f" % (mode_name, row, col, distance_cm))
+    if (frame_index % UART_SEND_INTERVAL_FRAMES) != 0:
+        return
+
+    if mode_name == "SEEK" and state_name == "TRACK":
+        if (not is_live_target(target)) or target.get("kind") != "tennis":
+            return
+
+        distance_cm = target_distance_cm(target)
+        uart_write_line(
+            "%s,%d,%d,%.1f" % (mode_name, int(pan_angle), int(tilt_angle), distance_cm)
+        )
+        return
 
 
 def send_command_packet(cmd, arg, mode_name, state_name):
@@ -3076,12 +3070,12 @@ def update_scan_motion(img, nearest_tennis):
 
 def enter_pick_mode():
     global mode, pick_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, nearest_switch_count, play_ready_frames
+    global player_locked, balls_served, nearest_switch_count
     global play_presence_window, play_hit_latched
     global best_scan_tennis, tracked_tennis, tracked_player
     global scan_ranked_tennis, scan_candidate_index
     global scan_seek_left, scan_direction, current_racket_id
-    global scan_tilt_reset_pending
+    global scan_tilt_reset_pending, play_runtime_placeholder_pending
     global pick_track_lost_count, pick_scan_fail_rounds
 
     mode = MODE_PICK
@@ -3091,7 +3085,6 @@ def enter_pick_mode():
     player_locked = False
     balls_served = 0
     nearest_switch_count = 0
-    play_ready_frames = 0
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
@@ -3104,17 +3097,19 @@ def enter_pick_mode():
     reset_play_lock_state()
     reset_play_hit_state()
     current_racket_id = 0
+    play_runtime_placeholder_pending = False
     pick_track_lost_count = 0
     pick_scan_fail_rounds = 0
 
 
 def enter_play_mode():
     global mode, pick_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, nearest_switch_count, play_ready_frames
+    global player_locked, balls_served, nearest_switch_count
     global play_presence_window, play_hit_latched
     global best_scan_tennis, tracked_tennis, tracked_player, current_racket_id
     global scan_ranked_tennis, scan_candidate_index
     global scan_direction, pick_track_lost_count, pick_scan_fail_rounds
+    global play_runtime_placeholder_pending
 
     mode = MODE_PLAY
     pick_substate = PICK_SCAN
@@ -3123,7 +3118,6 @@ def enter_play_mode():
     player_locked = False
     balls_served = 0
     nearest_switch_count = 0
-    play_ready_frames = 0
     best_scan_tennis = None
     scan_ranked_tennis = []
     scan_candidate_index = 0
@@ -3134,6 +3128,7 @@ def enter_play_mode():
     tracked_tennis = None
     tracked_player = None
     current_racket_id = 0
+    play_runtime_placeholder_pending = True
     pick_track_lost_count = 0
     pick_scan_fail_rounds = 0
     lift_tilt_for_play_mode()
@@ -3143,7 +3138,7 @@ def run_state_machine(
     img, tennis_target, tennis_candidates, player_target, racket_candidates
 ):
     global mode, pick_substate, capture_cmd, capture_flash_frames
-    global player_locked, balls_served, play_ready_frames
+    global player_locked, balls_served
     global nearest_switch_count, best_scan_tennis, tracked_tennis
     global scan_ranked_tennis, scan_candidate_index
     global current_racket_id
@@ -3152,8 +3147,7 @@ def run_state_machine(
     command_event = None
     player_live = is_live_target(player_target)
     racket_target = choose_racket_target(racket_candidates, player_target)
-    racket_visible = racket_target is not None
-    racket_present = racket_visible
+    racket_present = racket_target is not None
     if racket_present:
         if current_racket_id <= 0:
             current_racket_id = allocate_target_id()
@@ -3164,17 +3158,9 @@ def run_state_machine(
     nearest_tennis = choose_nearest_tennis(tennis_candidates)
     active_target = tennis_target
     host_ctrl_ok = host_control_enabled()
-    requested_mode = -1
-
-    if host_ctrl_ok:
-        requested_mode = consume_host_mode_switch_event()
-
-    if requested_mode == MODE_PICK and mode != MODE_PICK:
+    if host_ctrl_ok and consume_host_pick_mode_event() and mode != MODE_PICK:
         enter_pick_mode()
         return None, "SEEK", "SCAN", False, None, command_event
-    if requested_mode == MODE_PLAY and mode != MODE_PLAY:
-        enter_play_mode()
-        return None, "PLAY", "TRACK_P", False, None, command_event
 
     if capture_flash_frames > 0:
         capture_cmd = 1
